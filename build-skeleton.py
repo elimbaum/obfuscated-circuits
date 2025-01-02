@@ -6,11 +6,12 @@ import networkx as nx
 from enum import Enum, auto
 import itertools as it
 import random
-from collections import defaultdict
+from collections import defaultdict, Counter
 from pprint import pprint
 import matplotlib.pyplot as plt
 import functools
 import copy
+import numpy as np
 
 # %% [md]
 # # Skeleton Graphs
@@ -47,6 +48,7 @@ class Gate:
         if c1 is None:
             # NOT gate
             self.a = a
+            self.c = []
             self.type = GateT.NOT
         elif c2 is None:
             # CNOT gate
@@ -70,6 +72,9 @@ class Gate:
             return self.a
         else:
             return max(self.a, max(self.c))
+        
+    def wires(self):
+        return [self.a, *sorted(self.c)]
 
     # For NOT and CNOT, default arguments give proper results
     def eval(self, a_val, c1_val=True, c2_val=True):
@@ -80,23 +85,25 @@ class Gate:
         if self.type == GateT.NOT:
             return f"{self.type.name}[{self.a}]"
         return f"{name}[{self.a}; {' '.join(map(str, self.c))}]"
+    
+    def compact(self):
+        short_type = {GateT.NOT: 'N', GateT.CNOT: 'C', GateT.CCNOT: 'T'}[self.type]
+        return f"{short_type}[{self.a};{' '.join(map(str, self.c))}]"
 
     # Define a lexicographical ordering over Gates
     def __lt__(self, other, check_id=True):
-        if self.a < other.a:
+        if len(self.c) < len(other.c):
             return True
-
-        if len(self.c) > 0 and len(other.c) > 0:
-            if self.c[0] < other.c[0]:
-                return True
-            if len(self.c) == 2 and len(other.c) == 2:
-                if self.c[1] < other.c[1]:
-                    return True
-
-        if check_id:
-            return id(self) < id(other)
-        else:
+        
+        if len(self.c) > len(other.c):
             return False
+        
+        # same type. compare wires, and possibly IDs, if requested
+        self_id = id(self) if check_id else None
+        other_id = id(other) if check_id else None
+        
+        # use built-in tuple comparison
+        return (self.a, *self.c, self_id) < (other.a, *other.c, other_id)
 
     def __repr__(self):
         return self.__str__()
@@ -110,10 +117,15 @@ class Gate:
 
 class CanonicalGate(Gate):
     def __init__(self, g):
-        super().__init__(g.a, *g.c)
+        super().__init__(g.a, *sorted(g.c))
 
     def __eq__(self, other):
         return self.type == other.type and self.a == other.a and self.c == other.c
+
+    def __lt__(self, other):
+        r = super().__lt__(other, check_id=False)
+        print(f"{self} {'<' if r else '>='} {other}")
+        return r
 
     def __hash__(self):
         return super().__hash__()
@@ -211,11 +223,22 @@ def random_circuit(n, m):
     return Circuit([random.choice(b) for _ in range(m)])
 
 
-n = 5
+n = 8
 m = 8
 c = random_circuit(n, m)
 print(c)
 
+# %%
+class PermutationDict(dict):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._next_value = 0
+    
+    def __missing__(self, k):
+        while self._next_value in self.values():
+            self._next_value += 1
+        self[k] = self._next_value
+        return self._next_value
 
 # %%
 class SkeletonGraph(nx.DiGraph):
@@ -225,7 +248,7 @@ class SkeletonGraph(nx.DiGraph):
     edge_dict = {}
 
     def from_circuit(ckt: Circuit):
-        active_set = {}
+        active_set = defaultdict(list)
         control_set = defaultdict(list)
 
         graph = {g: set() for g in ckt.gates}
@@ -233,18 +256,26 @@ class SkeletonGraph(nx.DiGraph):
         for g in ckt.gates:
             # get control pins on this active pin
             back = control_set[g.a]
-            for h in back:
+            for h in filter(None, back):
                 graph[h].update([g])
-            active_set[g.a] = g
-            control_set[g.a] = []
+            
+            control_set[g.a].append(None)
+
+            if len(active_set[g.a]) > 0 and active_set[g.a][-1] is None:
+                active_set[g.a] = [g]
+            else:
+                active_set[g.a].append(g)
 
             for c in g.c:
                 # get active pins on each control pin
-                anode = active_set.get(c, None)
-                if anode is not None:
+                for anode in filter(None, active_set.get(c, [])):
                     graph[anode].update([g])
 
-                control_set[c].append(g)
+                if len(control_set[c]) > 0 and control_set[c][-1] is None:
+                    control_set[c] = [g]
+                else:
+                    control_set[c].append(g)
+                active_set[c].append(None)
 
         # pprint(graph)
         return SkeletonGraph(graph)
@@ -257,7 +288,20 @@ class SkeletonGraph(nx.DiGraph):
     def canonical(self):
         topo = nx.topological_generations(self)
 
-        return tuple(tuple(CanonicalGate(g) for g in sorted(level)) for level in topo)
+        wire_perm = PermutationDict()
+
+        new_topo = [[]]
+
+        for level in topo:
+            ls = sorted(level)
+            for g in ls:
+                w = list(map(lambda p: wire_perm[p], g.wires()))
+                # print(g.wires(), "->", w)
+                new_topo[-1].append(CanonicalGate(Gate(*w)))
+            new_topo.append([])
+
+        # pprint(wire_perm)
+        return tuple(tuple(lvl) for lvl in filter(None, new_topo))
 
     def draw(self):
         gen = list(nx.topological_generations(self))
@@ -286,12 +330,12 @@ class SkeletonGraph(nx.DiGraph):
         )
 
 # %%
-print(c)
 g = SkeletonGraph.from_circuit(c)
 print(g)
 
 plt.figure(figsize=(6, 4))
 g.draw()
+plt.show()
 
 for level in g.canonical():
     for cg in level:
@@ -305,12 +349,71 @@ def all_circuits(n, m):
     yield from map(Circuit, it.product(b, repeat=m))
 
 
-# %%
-K = list(all_circuits(3, 4))
-# %%
-G = set(map(lambda c: SkeletonGraph.from_circuit(c).canonical(), K))
+# %% [md]
+### Testing
+# `4,4` takes ~ a minute and uses 2 GB RAM. Can be optimized.
+n = 4
+m = 4
+K = all_circuits(n, m)
 # %%
 
-print(len(G), len(K), f"{len(G) / len(K) * 100:.1f}%")
+G = Counter(map(lambda c: SkeletonGraph.from_circuit(c).canonical(), K))
 
+num_ckt = sum(G.values())
+
+# %%
+print(f"{len(G)} canonical; {num_ckt} circuits ({len(G) / num_ckt * 100:.1f}%)")
+
+# %% [md]
+#### Histogram
+# pprint(G)
+
+# Why is this not consistent?? Order of circuits shouldn't matter...
+p = 0
+# for k, v in sorted(cc.items(), key=lambda k: k[1], reverse=True):
+#     print(f"{v:3} canonical circuits had {k:2} candidates each")
+#     p += k * v
+
+v1 = list(G.values())
+plt.hist(v1, bins=np.arange(1, max(v1) + 2), alpha=0.7)
+plt.show()
+# v2 = list(G2.values())
+# plt.hist(v2, bins=np.arange(1, max(v2) + 2), alpha=0.7)
+
+# unique = len([k for k, c in G.items() if c == 1])
+# print(f"{n=} {m=}: {unique} skeletons have a unique canonicalization")
+
+G
+# %%
+def compact_repr(T):
+    return ' '.join(''.join(g.compact() for g in L) for L in T)
+
+for k, v in G.most_common():
+    print(f"{compact_repr(k)}\t{v} circuits")
+
+for m, ckt_c in Counter(G.values()).most_common():
+    print(f"{ckt_c} skeleton graphs have circuit-multiplicity {m}")
+# %%
+
+GC = defaultdict(list)
+count = Counter()
+for c in K:
+    canon = SkeletonGraph.from_circuit(c).canonical()
+    GC[canon].append(c)
+    count[canon] += 1
+
+# %%
+
+for k, v in count.most_common():
+    print(k, v)
+    for ckt in GC[k]:
+        print(ckt)
+# %%
+
+c = Circuit([Gate(0), Gate(1, 0), Gate(1), Gate(2, 1)])
+print(c)
+# %%
+g = SkeletonGraph.from_circuit(c)
+# %%
+g.draw()
 # %%

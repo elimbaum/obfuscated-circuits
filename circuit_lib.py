@@ -404,17 +404,18 @@ class SkeletonCache:
     def __init__(self, n, m):
         self.n = n
         self.m = m
-        print(f"Building Skeleton Cache with {n=}, {m=}")
 
         self.b = list(base_perms(n))
         # TODO: up to reordering
         self.n_perms = math.factorial(2**n) // 2
         self.num_ckts = len(self.b) ** m
-        print(
-            f"2^{round(math.log2(self.n_perms))} perms on {n} wires. b={len(self.b)}; {self.num_ckts} circuits."
-        )
+
 
     def build(self):
+        print(f"Building Skeleton Cache with {self.n=}, {self.m=}")
+        print(
+            f"2^{round(math.log2(self.n_perms))} perms on {self.n} wires. b={len(self.b)}; {self.num_ckts} circuits."
+        )
         skel = Counter()
         perms = defaultdict(list)
         uniq_perms = defaultdict(list)
@@ -466,6 +467,12 @@ class SkeletonCache:
 
             swaps = bitswaps(self.n)
 
+            # with multiprocessing.Pool(self.PROCS) as pool:
+            #     par_it = pool.imap_unordered(
+            #         partial(bitswap_work, swaps), perms.items(), chunksize=16
+            #     )
+
+            #     for 
             for perm, skels in perms.items():
                 prog.advance(task_uniq_perm)
                 pp = perm

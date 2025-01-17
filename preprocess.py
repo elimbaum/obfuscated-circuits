@@ -2,6 +2,7 @@
 
 from circuit_lib import SkeletonCache
 import argparse
+import itertools as it
 
 def main():
     parse = argparse.ArgumentParser()
@@ -20,22 +21,21 @@ def main():
         cache.stats()
 
     elif args.r:
+        max_combined = 12
 
+        skel_list = []
 
-        last_n = n = m = 2
-        while n + m < 12:
-            print("—" * 32)
+        for (n, m) in it.product(range(2, max_combined), range(2, max_combined)):
+            if n + m > max_combined:
+                continue
             cache = SkeletonCache(n, m)
+            skel_list.append(cache)
+
+        # sort by num circuits
+        for cache in sorted(skel_list, key=lambda c: c.num_ckts):
+            print("—" * 32)
             cache.build()
             cache.stats()
-            n -= 1
-            m += 1
-
-            if n < 2:
-                last_n += 1
-                n = last_n
-                m = 2
-
 
 if __name__ == '__main__':
     main()

@@ -462,31 +462,27 @@ class SkeletonCache:
 
                 self.perms = perms
 
-            # single proc for now
-            task_uniq_perm = prog.add_task("Canon. Perm", total=len(perms))
-
             swaps = bitswaps(self.n)
+            
+            if self.n > 5:
+                print(f"Skipping: {self.n=} and {swaps=}")
+            else:
+                # single proc for now
+                task_uniq_perm = prog.add_task("Canon. Perm", total=len(perms))
+                for perm, skels in perms.items():
+                    prog.advance(task_uniq_perm)
+                    pp = perm
+                    for p in bitswap_iter(perm, swaps):
+                        # print(f" b/s: {p}")
+                        if p in uniq_perms:
+                            pp = p
+                            # print(f"duplicate: {perm} => {p} already seen")
+                            break
 
-            # with multiprocessing.Pool(self.PROCS) as pool:
-            #     par_it = pool.imap_unordered(
-            #         partial(bitswap_work, swaps), perms.items(), chunksize=16
-            #     )
+                    # TODO: recanonicalize these skeletons?
+                    uniq_perms[pp].extend(skels)
 
-            #     for 
-            for perm, skels in perms.items():
-                prog.advance(task_uniq_perm)
-                pp = perm
-                for p in bitswap_iter(perm, swaps):
-                    # print(f" b/s: {p}")
-                    if p in uniq_perms:
-                        pp = p
-                        # print(f"duplicate: {perm} => {p} already seen")
-                        break
-
-                # TODO: recanonicalize these skeletons?
-                uniq_perms[pp].extend(skels)
-
-            self.uniq_perms = uniq_perms
+                self.uniq_perms = uniq_perms
 
             prog.refresh()
 

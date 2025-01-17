@@ -1,6 +1,6 @@
 from collections import defaultdict, Counter
 from enum import Enum, auto
-from functools import reduce
+from functools import reduce, partial
 import copy
 import numpy as np
 import itertools as it
@@ -242,8 +242,7 @@ class Circuit:
 
 def all_circuits(n, m):
     b = base_perms(n)
-    yield from map(lambda g: Circuit(g, wires=n), it.product(b, repeat=m))
-
+    yield from it.product(b, repeat=m)
 
 class PermutationDict(dict):
     def __init__(self, *args, **kwargs):
@@ -370,8 +369,8 @@ class Permutation(tuple):
         )
 
 
-def ckt_to_skel(ckt):
-    return SkeletonGraph.from_circuit(ckt).canonical()
+def ckt_to_skel(n, ckt):
+    return SkeletonGraph.from_circuit(Circuit(ckt, wires=n)).canonical()
 
 def perm_work(skel):
     # ignore the original circuit and recompute a canonical circuit from the
@@ -436,7 +435,7 @@ class SkeletonCache:
 
             with multiprocessing.Pool(self.PROCS) as pool:
                 par_it = pool.imap_unordered(
-                    ckt_to_skel, all_circuits(self.n, self.m), chunksize=16
+                    partial(ckt_to_skel, self.n), all_circuits(self.n, self.m), chunksize=16
                 )
 
                 for canon in par_it:

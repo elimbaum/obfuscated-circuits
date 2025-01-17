@@ -466,7 +466,8 @@ class SkeletonCache:
             swaps = bitswaps(self.n)
             
             if self.n > 5:
-                print(f"Skipping: {self.n=} and {swaps=}")
+                print(f"Skipping: {self.n=} with {len(swaps)} bit swaps")
+                self.uniq_perms = []
             else:
                 # single proc for now
                 task_uniq_perm = prog.add_task("Canon. Perm", total=len(perms))

@@ -9,9 +9,12 @@ import random
 from collections import defaultdict, Counter
 from pprint import pprint
 import matplotlib.pyplot as plt
-import functools
+from functools import reduce
 import copy
 import numpy as np
+import math
+import hashlib
+import concurrent.futures
 
 # %% [md]
 # # Skeleton Graphs
@@ -88,7 +91,7 @@ class Gate:
     
     def compact(self):
         short_type = {GateT.NOT: 'N', GateT.CNOT: 'C', GateT.CCNOT: 'T'}[self.type]
-        return f"{short_type}[{self.a};{' '.join(map(str, self.c))}]"
+        return f"{short_type}[{self.a},{' '.join(map(str, self.c))}]"
 
     # Define a lexicographical ordering over Gates
     def __lt__(self, other, check_id=True):
@@ -124,7 +127,7 @@ class CanonicalGate(Gate):
 
     def __lt__(self, other):
         r = super().__lt__(other, check_id=False)
-        print(f"{self} {'<' if r else '>='} {other}")
+        # print(f"{self} {'<' if r else '>='} {other}")
         return r
 
     def __hash__(self):
@@ -165,9 +168,15 @@ CKT_DOT_CHAR = "●"
 
 
 class Circuit:
-    def __init__(self, gates):
+    gates = []
+    def __init__(self, gates, wires=None):
         self.gates = []
         self.extend(gates)
+        self.hash = hashlib.sha256(usedforsecurity=False)
+        self.permdig = None
+
+        if wires:
+            self.wires = max(self.wires, wires)
 
     def extend(self, gates):
         self.gates.extend(copy.deepcopy(g) for g in gates)
@@ -176,6 +185,40 @@ class Circuit:
 
     def __len__(self):
         return len(self.gates)
+    
+    def eval(self, input):
+        assert(len(input) == self.wires)
+
+        state = input[:]
+        for g in self.gates:
+            state[g.a] = g.eval(state[g.a], *(state[c] for c in g.c))
+
+        return state
+
+    def perm(self, digest=False):
+        """return the permutation computed by this circuit, or a digest"""
+        if digest and self.permdig:
+            return self.permdig
+        
+        p = []
+        for i in range(2 ** self.wires):
+            b = format(i, "0{}b".format(self.wires))
+            out_list = self.eval(list(map(int, b)))
+
+            if digest:
+                self.hash.update(bytes(out_list))
+            else:
+                out_n = reduce(lambda a, b: (a << 1) | b, out_list, 0)
+                p.append(out_n)
+
+        if digest:
+            self.permdig = self.hash.hexdigest()
+            return self.permdig
+        else:
+            return p
+        
+    def fingerprint(self):
+        return self.perm(digest=True)
 
     def __str__(self):
         s = ""
@@ -211,7 +254,9 @@ class Circuit:
             s += "\n"
 
         return s
-
+    
+    def __repr__(self):
+        return "{" + ' '.join(g.compact() for g in self.gates) + "}"
 
 # %%
 # A random circuit.
@@ -227,6 +272,9 @@ n = 8
 m = 8
 c = random_circuit(n, m)
 print(c)
+
+print(c.perm(digest=True))
+print(c.perm(digest=False))
 
 # %%
 class PermutationDict(dict):
@@ -346,14 +394,14 @@ for level in g.canonical():
 # %%
 def all_circuits(n, m):
     b = base_perms(n)
-    yield from map(Circuit, it.product(b, repeat=m))
+    yield from map(lambda g: Circuit(g, wires=n), it.product(b, repeat=m))
 
 
 # %% [md]
 ### Testing
 # `4,4` takes ~ a minute and uses 2 GB RAM. Can be optimized.
-n = 4
-m = 4
+n = 3
+m = 3
 K = all_circuits(n, m)
 # %%
 
@@ -375,8 +423,9 @@ p = 0
 #     p += k * v
 
 v1 = list(G.values())
-plt.hist(v1, bins=np.arange(1, max(v1) + 2), alpha=0.7)
-plt.show()
+# plt.figure(figsize=(8, 4))
+# plt.hist(v1, bins=np.arange(1, max(v1) + 2), alpha=0.7)
+# plt.show()
 # v2 = list(G2.values())
 # plt.hist(v2, bins=np.arange(1, max(v2) + 2), alpha=0.7)
 
@@ -401,13 +450,14 @@ for c in K:
     canon = SkeletonGraph.from_circuit(c).canonical()
     GC[canon].append(c)
     count[canon] += 1
-
 # %%
 
 for k, v in count.most_common():
     print(k, v)
     for ckt in GC[k]:
         print(ckt)
+
+
 # %%
 
 c = Circuit([Gate(0), Gate(1, 0), Gate(1), Gate(2, 1)])
@@ -416,4 +466,126 @@ print(c)
 g = SkeletonGraph.from_circuit(c)
 # %%
 g.draw()
+# %%
+
+
+len(G) / num_ckt
+# %% [md]
+### Preprocess all circuits
+#
+# For each circuit sampled, build the canonicalized skeleton graph and determine
+# the permutation it computes. Bucket skeleton graphs by permutation.
+
+class Permutation(tuple):
+    def __init__(self, t):
+        self.t = t
+
+    def __str__(self):
+        # TODO: cycle notation
+        return "[" + " ".join(
+            map(
+                lambda x: '.' if x[0] == x[1] else str(x[1]),
+                zip(range(len(self.t)), self.t)
+            )) + "]"
+
+class SkeletonCache():
+    def __init__(self, n, m):
+        self.n = n
+        self.m = m
+        print(f"Building Skeleton Cache with {n=}, {m=}")
+
+        self.b = list(base_perms(n))
+        # TODO: up to reordering
+        self.n_perms = math.factorial(2 ** n) // 2
+        print(f"{self.n_perms} perms on {n} wires. b={len(self.b)}; {len(self.b) ** m} circuits.")
+
+    def build(self):
+        K = all_circuits(self.n, self.m)
+        G = defaultdict(lambda: defaultdict(list))
+
+        canon2perm = {}
+
+        def ckt_work(ckt):
+            return Permutation(ckt.perm()), SkeletonGraph.from_circuit(ckt).canonical()
+
+        # with concurrent.futures.ProcessPoolExecutor() as exec:
+        #     for ckt, (perm, graph) in zip(K, exec.map(ckt_work, K)):
+        #         G[perm][graph].append(ckt)
+        
+
+        for ckt in K:
+            perm, canon = ckt_work(ckt)
+            # get the canonical perm
+            cperm = canon2perm.setdefault(canon, perm)
+
+            G[cperm][canon].append(ckt)
+        
+        # graphs = sum(len(v) for _, v in G.items())
+        # print(f"{graphs} graphs generated {len(G)} perms ({pct*100:.1f}%)")
+        self.G = G
+        return G
+    
+    def stats(self):
+        num_graphs = sum(len(v) for v in self.G.values())
+        num_perms = len(G)
+
+        iden_perm = Permutation(range(2 ** self.n))
+        iden_graphs = G[iden_perm]
+        num_id_graphs = len(iden_graphs)
+        num_id_ckts = sum(len(v) for v in iden_graphs.values())
+
+        uniq_graph = sum(1 if len(v) == 1 else 0 for v in G.values())
+        uniq_ckt = sum(1 if (sum(len(c) for c in v) == 1) else 0 for v in G.values())
+    
+        print(f"{len(self.b) ** self.m} circuits => {num_graphs} uniq graphs => {num_perms} uniq perms")
+        print(f"  {num_id_ckts} id ckts => {num_id_graphs} id graphs")
+        print(f"  {uniq_graph} perms w/ a uniq graph")
+        print(f"  {uniq_ckt} perms w/ a uniq circuit")
+
+    def print(self):
+        for p, gs in self.G.items():
+            title = f"Perm {p}: {len(gs)} graphs, {sum(len(k) for k in gs.values())} circuits"
+            print("\n" + "=" * len(title))
+            print(title)
+
+            for i, (g, ckt) in enumerate(gs.items()):
+                print(f"#{1+i} Graph {g}: {len(ckt)} circuits.")
+
+                for k in ckt:
+                    print(k)
+                    break
+
+
+# %%
+cache = SkeletonCache(n=4, m=3)
+G = cache.build()
+
+cache.stats()
+
+# %%
+cache.print()
+
+# %%
+pprint(G)
+# %%
+count_ckt = [sum(v.values()) for _, v in G.items()]
+count_graph = [len(v) for _, v in G.items()]
+# %%
+plt.hist(count_ckt, bins=np.arange(1, max(count_ckt) + 2), alpha=0.5)
+ax = plt.twinx()
+ax.hist(count_graph, bins=np.arange(1, max(count_graph) + 2), color='orange', alpha=0.5)
+plt.xlim(0, 50)
+
+# %%
+s = sorted(G, key=lambda k:sum(G[k].values()), reverse=True)
+for k in s:
+    print(k, sum(G[k].values()))
+# %%
+pprint(G)
+# %%
+
+
+sum(1 if len(v) == 1 else 0 for v in G.values())
+# %%
+len(G)
 # %%

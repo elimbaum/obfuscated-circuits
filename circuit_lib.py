@@ -467,7 +467,7 @@ class SkeletonCache:
             
             if self.n > 5:
                 print(f"Skipping: {self.n=} with {len(swaps)} bit swaps")
-                self.uniq_perms = []
+                self.uniq_perms = {}
             else:
                 # single proc for now
                 task_uniq_perm = prog.add_task("Canon. Perm", total=len(perms))
@@ -523,7 +523,7 @@ class SkeletonCache:
             pow = 2 ** n_
             p = tuple(range(pow))
             # print(f"{p}: {len(self.uniq_perms[p])} skel")
-            n_id += len(self.uniq_perms[p])
+            n_id += len(self.uniq_perms.get(p, []))
 
         print(f"  {n_id} identity graphs")
 

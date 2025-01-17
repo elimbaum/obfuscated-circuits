@@ -18,6 +18,7 @@ from rich.progress import (
 )
 from rich import print
 import multiprocessing
+import os
 
 class GateT(Enum):
     NOT = "N"
@@ -399,7 +400,7 @@ def bitswap_iter(p, swaps):
         yield tuple(out.astype(list))
 
 class SkeletonCache:
-    PROCS = 6
+    PROCS = os.cpu_count() // 2
 
     def __init__(self, n, m):
         self.n = n

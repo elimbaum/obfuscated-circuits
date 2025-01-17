@@ -3,8 +3,11 @@
 from circuit_lib import SkeletonCache
 import argparse
 import itertools as it
+import multiprocessing
 
 def main():
+    multiprocessing.set_start_method('spawn')
+    
     parse = argparse.ArgumentParser()
     parse.add_argument("-n", type=int, help="number of wires/bits")
     parse.add_argument("-m", type=int, help="number of gates")

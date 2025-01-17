@@ -17,7 +17,7 @@ from rich.progress import (
     TransferSpeedColumn,
 )
 from rich import print
-import multiprocessing
+import multiprocessing as mp
 import os
 
 class GateT(Enum):
@@ -100,6 +100,9 @@ class Gate:
 
     def __hash__(self):
         return hash((self.type, self.a, tuple(self.c)))
+    
+    def copy(self):
+        return Gate(self.a, *self.c)
 
 
 class CanonicalGate(Gate):
@@ -148,7 +151,7 @@ class Circuit:
             self.wires = max(self.wires, wires)
 
     def extend(self, gates):
-        self.gates.extend(copy.deepcopy(g) for g in gates)
+        self.gates.extend(g.copy() for g in gates)
         # zero wire is allowed
         self.wires = 1 + max(g.bottom() for g in gates)
 
@@ -294,7 +297,6 @@ class SkeletonGraph(nx.DiGraph):
                     control_set[c].append(g)
                 active_set[c].append(None)
 
-        # pprint(graph)
         return SkeletonGraph(graph)
 
     def single_edge_dict(self):
@@ -373,6 +375,14 @@ class Permutation(tuple):
 def ckt_to_skel(n, ckt):
     return SkeletonGraph.from_circuit(Circuit(ckt, wires=n)).canonical()
 
+def append_gates(base, n, skel):
+    sk = list(it.chain.from_iterable(skel))
+    r = []
+    for b in base:
+        ckt = Circuit(list((*sk, b)), wires=n)
+        r.append(SkeletonGraph.from_circuit(ckt).canonical())
+    return r
+
 def perm_work(skel):
     # ignore the original circuit and recompute a canonical circuit from the
     # graph
@@ -411,9 +421,78 @@ class SkeletonCache:
         self.n_perms = math.factorial(2**n) // 2
         self.num_ckts = len(self.b) ** m
 
+    def build_from(self, prev):
+        print(f"Building Skeleton Cache with {self.n=}, {self.m=} from scratch")
+        assert prev.n == self.n and prev.m == self.m - 1
+
+        self.num_ckts = len(prev.skel) * len(self.b)
+        print(f"  {self.num_ckts} circuits")
+
+        self.skel = Counter()
+        self.perms = defaultdict(list)
+        self.uniq_perms = defaultdict(list)
+
+        with Progress(
+            "[progress.description]{task.description}",
+            MofNCompleteColumn(),
+            BarColumn(),
+            "[progress.percentrage]{task.percentage:>3.0f}%",
+            TimeElapsedColumn(),
+            "ETA",
+            TimeRemainingColumn(),
+            TransferSpeedColumn(),
+            refresh_per_second=4,
+            speed_estimate_period=120
+        ) as prog:
+            
+            task_skel = prog.add_task("Skeletons", total=self.num_ckts)
+
+            with mp.Pool(self.PROCS) as pool:
+                par_it = pool.imap_unordered(
+                    partial(append_gates, self.b, self.n), prev.skel.keys()
+                )
+
+                for c in par_it:
+                    prog.advance(task_skel, advance=len(c))
+                    self.skel.update(c)
+
+            task_perm = prog.add_task("Perms", total=len(self.skel))
+            with mp.Pool(self.PROCS) as pool:
+                par_it = pool.imap_unordered(
+                    perm_work, self.skel.keys(), chunksize=16
+                )
+
+                # TODO: inverse function can be ignored
+                for skel, perm in par_it:
+                    prog.advance(task_perm)
+                    self.perms[perm].append(skel)
+
+            swaps = bitswaps(self.n)
+            
+            if self.n > 5:
+                print(f"Skipping: {self.n=} with {len(swaps)} bit swaps")
+                self.uniq_perms = {}
+            else:
+                # single proc for now
+                task_uniq_perm = prog.add_task("Canon. Perm", total=len(self.perms))
+                for perm, skels in self.perms.items():
+                    prog.advance(task_uniq_perm)
+                    pp = perm
+                    for p in bitswap_iter(perm, swaps):
+                        # print(f" b/s: {p}")
+                        if p in self.uniq_perms:
+                            pp = p
+                            # print(f"duplicate: {perm} => {p} already seen")
+                            break
+
+                    # TODO: recanonicalize these skeletons?
+                    self.uniq_perms[pp].extend(skels)
+            
+            prog.refresh()
 
     def build(self):
-        print(f"Building Skeleton Cache with {self.n=}, {self.m=}")
+        print(f"Building Skeleton Cache with {self.n=}, {self.m=} from scratch")
+
         print(
             f"2^{round(math.log2(self.n_perms))} perms on {self.n} wires. b={len(self.b)}; {self.num_ckts} circuits."
         )
@@ -435,7 +514,7 @@ class SkeletonCache:
         ) as prog:
             task_skel = prog.add_task("Skeleton Graphs", total=self.num_ckts)
 
-            with multiprocessing.Pool(self.PROCS) as pool:
+            with mp.Pool(self.PROCS) as pool:
                 par_it = pool.imap_unordered(
                     partial(ckt_to_skel, self.n), all_circuits(self.n, self.m), chunksize=16
                 )
@@ -450,7 +529,7 @@ class SkeletonCache:
                 self.skel = skel
 
             task_perm = prog.add_task("Permutations", total=len(skel))
-            with multiprocessing.Pool(self.PROCS) as pool:
+            with mp.Pool(self.PROCS) as pool:
                 par_it = pool.imap_unordered(
                     perm_work, skel.keys(), chunksize=16
                 )
@@ -511,8 +590,10 @@ class SkeletonCache:
         )
 
         dups = num_perms - len(self.uniq_perms)
-        dup_pct = 100 * dups / num_perms
-        print(f"  {len(self.uniq_perms)} uniq perms up to wire ordering ({dups=}, {dup_pct:.1f}%)")
+        if num_perms > 0:
+            dup_pct = 100 * dups / num_perms
+            print(f"  {len(self.uniq_perms)} uniq perms up to wire ordering ({dups=}, {dup_pct:.1f}%)")
+        
         # # print(f"  Stored {stored}")
         # print(f"  {num_id_ckts} id ckts => {num_id_graphs} id graphs")
         # print(f"  {uniq_graph} perms w/ a uniq graph")
@@ -536,8 +617,8 @@ class SkeletonCache:
         #     if len(sk) == 1:
         #         print(f"Perm {p}")
         #         skel = sk[0]
-        #         print(skel)
-        #         print(Circuit(list(it.chain.from_iterable(skel))))
+        #         # print(skel)
+        #         # print(Circuit(list(it.chain.from_iterable(skel))))
 
     def print(self):
         sG = sorted(self.G.items(), key=lambda x: sum(x[1].values()), reverse=True)
@@ -551,6 +632,6 @@ class SkeletonCache:
 
                 print(Circuit(list(it.chain.from_iterable(g)), wires=self.n))
 
-                # for k in ckt:
-                #     print(k)
-                # break
+                for k in ckt:
+                    print(k)
+                    break

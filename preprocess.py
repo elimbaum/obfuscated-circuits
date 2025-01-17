@@ -7,7 +7,7 @@ import multiprocessing
 
 def main():
     multiprocessing.set_start_method('spawn')
-    
+
     parse = argparse.ArgumentParser()
     parse.add_argument("-n", type=int, help="number of wires/bits")
     parse.add_argument("-m", type=int, help="number of gates")
@@ -16,11 +16,18 @@ def main():
 
 
     if args.n and args.m:
-        cache = SkeletonCache(args.n, args.m)
+        pre_cache = SkeletonCache(args.n, m=2)
+        pre_cache.build()
+        pre_cache.stats()
+        for m_ in range(3, args.m):
+            print("—" * 32)
+            next_cache = SkeletonCache(args.n, m_)
+            next_cache.build_from(pre_cache)
+            next_cache.stats()
+            pre_cache = next_cache
 
-        cache.build()
-        
-        # cache.print()
+        cache = SkeletonCache(args.n, args.m)
+        cache.build_from(pre_cache)
         cache.stats()
 
     elif args.r:

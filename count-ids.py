@@ -20,16 +20,15 @@ def invert(perm):
     for i, p in enumerate(perm):
         inv[p] = i
 
-    return lib.Permutation(inv)
+    return tuple(inv)
 
 def ckt_work(gates):
     ckt = lib.Circuit(gates, wires=n)
     g = lib.SkeletonGraph.from_circuit(ckt)
-    p = ckt.perm()
+    p = tuple(ckt.perm())
     s = tuple(g.sorted_gates())
-    invp = invert(p)
 
-    return (p, invp, s)
+    return (p, s)
 
 def generate_new(n, m_):
     all_ckt = lib.all_circuits(n, m_)
@@ -43,13 +42,15 @@ def generate_new(n, m_):
     with Progress() as prog:
         task = prog.add_task("Build circuits...", total=count)
 
-        with mp.Pool(os.cpu_count()) as pool:
+        with mp.Pool(os.process_cpu_count() // 2) as pool:
             par = pool.imap_unordered(
                 ckt_work, all_ckt
             )
 
             for c in par:
-                p, invp, s = c
+                p, s = c
+
+                invp = invert(p)
         
                 # If inverse already listed, then add this circuit there
                 # First argument of tuple says whether this circuit is inverted or not

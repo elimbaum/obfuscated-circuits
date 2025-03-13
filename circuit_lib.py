@@ -59,6 +59,11 @@ class Gate:
             self.c = (c1, c2)
             self.type = GateT.nTOF if inverted else GateT.TOF
 
+    # efficient repr for Pickling
+    def __reduce__(self):
+        c1 = None if len(self.c) == 1 else self.c[1]
+        return (self.__class__, (self.a, self.c[0], c1, self.inverted))
+
     # extents of the gate
     def top(self):
         return min(self.a, min(self.c))
@@ -112,10 +117,13 @@ class Gate:
 
 
 class CanonicalGate(Gate):
-    def __init__(self, g):
-        c1 = g.c[1] if len(g.c) > 1 else None
-
-        super().__init__(g.a, g.c[0], c1, g.inverted)
+    def __init__(self, *args):
+        if args and type(args[0]) == Gate:
+            g = args[0]
+            c1 = g.c[1] if len(g.c) > 1 else None
+            super().__init__(g.a, g.c[0], c1, g.inverted)
+        else:
+            super().__init__(*args)
 
     def __eq__(self, other):
         return self.type == other.type and self.a == other.a and self.c == other.c
@@ -143,6 +151,35 @@ class Permutation(tuple):
             )
             + "]"
         )
+    
+    def cycle(self):
+        n = len(self.t)
+        visited = [False] * n
+        cycle = []
+
+        for i, dest in enumerate(self.t):
+            if visited[i]:
+                continue
+
+            visited[i] = True
+
+            if i == dest:
+                continue
+
+            c = [i]
+            while True:
+                if dest == c[0]:
+                    cycle.append(c)
+                    break
+
+                visited[dest] = True
+                c.append(dest)
+                dest = p[dest]
+
+        return tuple(cycle)
+    
+    def __reduce__(self):
+        return (self.__class__, (self.t,))
 
 def base_perms(n):
     """Generates all base permutations over $n$ wires."""

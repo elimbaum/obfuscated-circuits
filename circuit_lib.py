@@ -112,6 +112,11 @@ class Gate:
 
 
 class CanonicalGate(Gate):
+    def __init__(self, g):
+        c1 = g.c[1] if len(g.c) > 1 else None
+
+        super().__init__(g.a, g.c[0], c1, g.inverted)
+
     def __eq__(self, other):
         return self.type == other.type and self.a == other.a and self.c == other.c
 
@@ -121,6 +126,23 @@ class CanonicalGate(Gate):
 
     def __hash__(self):
         return super().__hash__()
+
+class Permutation(tuple):
+    def __init__(self, t):
+        self.t = t
+
+    def __str__(self):
+        # TODO: cycle notation
+        return (
+            "["
+            + " ".join(
+                map(
+                    lambda x: "." if x[0] == x[1] else str(x[1]),
+                    zip(range(len(self.t)), self.t),
+                )
+            )
+            + "]"
+        )
 
 def base_perms(n):
     """Generates all base permutations over $n$ wires."""
@@ -195,7 +217,7 @@ class Circuit:
             # self.permdig = self.hash.hexdigest()
             return self.permdig
         else:
-            return tuple(p)
+            return Permutation(p)
         
     
 
@@ -407,7 +429,7 @@ class SkeletonGraph(nx.DiGraph):
 
         out = []
         for layer in topo:
-            out.extend(sorted(layer))
+            out.extend(CanonicalGate(g) for g in sorted(layer))
 
         return out
 
@@ -590,24 +612,6 @@ class SkeletonGraph(nx.DiGraph):
         )
 
 
-class Permutation(tuple):
-    def __init__(self, t):
-        self.t = t
-
-    def __str__(self):
-        # TODO: cycle notation
-        return (
-            "["
-            + " ".join(
-                map(
-                    lambda x: "." if x[0] == x[1] else str(x[1]),
-                    zip(range(len(self.t)), self.t),
-                )
-            )
-            + "]"
-        )
-
-
 def ckt_to_skel(n, ckt):
     return SkeletonGraph.from_circuit(Circuit(ckt, wires=n)).canonical()
 
@@ -658,6 +662,7 @@ class SkeletonCache:
         self.num_ckts = len(self.b) ** m
 
     def build_from(self, prev):
+
         print(f"Building Skeleton Cache with {self.n=}, {self.m=} from scratch")
         assert prev.n == self.n and prev.m == self.m - 1
 

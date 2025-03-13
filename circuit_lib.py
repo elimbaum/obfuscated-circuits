@@ -16,6 +16,7 @@ from rich.progress import (
     MofNCompleteColumn,
     TransferSpeedColumn,
 )
+from rich.pretty import pprint
 from rich import print
 import multiprocessing as mp
 import os
@@ -137,6 +138,10 @@ def base_perms(n):
     # NOT gates
     yield from (Gate(active) for active in range(n))
 
+def zero_active_perms(n):
+    b = base_perms(n)
+    yield from filter(lambda g: g.a == 0, b)
+
 
 class Circuit:
     gates = []
@@ -189,6 +194,8 @@ class Circuit:
             return self.permdig
         else:
             return tuple(p)
+        
+    
 
     # def __eq__(self, other):
     #     if len(self) != len(other):
@@ -244,9 +251,24 @@ class Circuit:
         return "{" + " ".join(g.compact() for g in self.gates) + "}"
 
 
-def all_circuits(n, m):
-    b = base_perms(n)
-    yield from it.product(b, repeat=m)
+def all_circuits(n, m, zero_start=False):
+    b = list(base_perms(n))
+
+    if zero_start:
+        z = list(zero_active_perms(n))
+        itl = [z] + [b] * (m - 1)
+        yield from it.product(*itl)
+    else:
+        yield from it.product(b, repeat=m)
+
+
+def random_circuit(n, m):
+    b = list(base_perms(n))
+    return Circuit([random.choice(b) for _ in range(m)])
+
+def all_unique(x):
+    seen = set()
+    return not any(i in seen or seen.add(i) for i in x)
 
 class PermutationDict(dict):
     def __init__(self, *args, **kwargs):
@@ -260,24 +282,52 @@ class PermutationDict(dict):
         return self._next_value
 
 
+class NodeType(Enum):
+    Wire = 'W'
+    Gate = 'G'
+
+    def __lt__(self, other):
+        return self.value < other.value
+    
+    def __repr__(self):
+        return self.value
+    
+class EdgeWeight(complex):
+    def __lt__(self, y):
+        s_re = self.real
+        s_im = self.imag
+        y_re = y.real
+        y_im = y.imag
+        
+        s_norm = (abs(s_re) + abs(s_im), s_re, s_im)
+        y_norm = (abs(y_re) + abs(y_im), y_re, y_im)
+        return s_norm < y_norm
+
 class SkeletonGraph(nx.DiGraph):
     """A lightweight class to represent skeleton graphs."""
 
-    # edges do not need labels
-    edge_dict = {}
-
-    def from_circuit(ckt: Circuit):
+    def from_circuit(ckt: Circuit, augmented=False):
         w = ckt.wires
         active_set = [[] for _ in range(w)]
         control_set = [[] for _ in range(w)]
 
-        graph = {g: set() for g in ckt.gates}
+        sk = SkeletonGraph()
+
+        if augmented:
+            sk.add_nodes_from(range(ckt.wires))
 
         for g in ckt.gates:
             # get control pins on this active pin
             back = control_set[g.a]
             for h in filter(None, back):
-                graph[h].add(g)
+                # this is a control -> active collision
+                sk.add_edge(h, g, wt=1j)
+
+            if augmented:
+                # also add the wire edges
+                sk.add_edge(g, g.a, wt=1)
+                for c_ in g.c:
+                    sk.add_edge(g, c_, wt=1j)
 
             control_set[g.a].append(None)
 
@@ -289,7 +339,8 @@ class SkeletonGraph(nx.DiGraph):
             for c in g.c:
                 # get active pins on each control pin
                 for anode in filter(None, active_set[c]):
-                    graph[anode].add(g)
+                    sk.add_edge(anode, g, wt=1)
+                    # graph[anode].add(g)
 
                 if len(control_set[c]) > 0 and control_set[c][-1] is None:
                     control_set[c] = [g]
@@ -297,32 +348,183 @@ class SkeletonGraph(nx.DiGraph):
                     control_set[c].append(g)
                 active_set[c].append(None)
 
-        return SkeletonGraph(graph)
+        # sk = SkeletonGraph(graph, gates=ckt.gates, wires=w)
+        sk.gates = ckt.gates
+        sk.wires = w
+        # handle edge weights
 
-    def single_edge_dict(self):
-        return self.edge_dict
+        # nx.set_edge_attributes(sk, 1, name='wt')
 
-    edge_attr_dict_factory = single_edge_dict
+        # if augmented:
+        #     # for each wire
+        #     for u in range(w):
+        #         # for each gate on this wire
+        #         print(f"wire {u}: {sk.pred[u]}")
+        #         for v in sk.pred[u]:
+        #             # add an wire edge. positive for active, negative for
+        #             # control. Remove regular edge.
+        #             # del sk[v][u]['wt']
+                    # sk[v][u]['wt'] = 1 if u == v.a else 1j
+
+        # pprint(list(sk.edges(data=True)))
+        return sk
+    
+    # def wire_canonical(self):
+    #     topo = list(nx.topological_generations(self))
+
+    #     n2l = {}
+
+    #     for layer, nodes in enumerate(topo):
+    #         n2l.update({n: layer for n in nodes})
+        
+    #     print(n2l)
+
+    #     for layer, nodes in enumerate(topo):
+    #         wire_nodes = list(filter(lambda t: type(t) == int, nodes))
+    #         # concat all d['w']
+    #         ie = defaultdict(list)
+    #         for wn in wire_nodes:
+    #             ie[wn] = tuple((n2l[u], u.type.value, self.out_degree(u, weight='weight'), e['weight']) for (u, v, e) in self.in_edges(wn, data=True))
+
+    #         print(f"L{layer}: {ie}")
+    #         assert(len(set(ie.values())) == len(ie))
+
+    #         # print(f"{layer}: {list(filter(lambda t: type(t) == int, nodes))}")
+
+    # TODO: need to differentiate between C-A collisions and A-C collisions.
+
+    def label_in_deg(self, n, label):
+        return sum(
+            self[u][n].get(label, 0) for u in self.pred[n]
+        )
 
     def canonical(self):
-        topo = nx.topological_generations(self)
+        topo = list(nx.topological_generations(self))
 
-        wire_perm = PermutationDict()
+        n2l = {}
+        l2n = defaultdict(list)
+        types = {}
 
-        new_topo = []
+        for layer, nodes in enumerate(topo):
+            n2l.update({n: layer for n in nodes})
+            l2n[layer].extend(list(filter(lambda t: type(t) != int, nodes)))
+            types.update({n: 'W' if type(n) == int else n.type.value for n in nodes})
 
-        for level in topo:
-            ls = sorted(level)
-            t = []
-            for g in ls:
-                t.append(CanonicalGate(*[wire_perm[p] for p in g.wires()]))
+        inD = self.in_degree(weight='wt')
+        outD = self.out_degree(weight='wt')
 
-            new_topo.append(tuple(sorted(t)))
+        nx.set_node_attributes(self, None, name='hash')
 
-        # pprint(wire_perm)
-        return tuple(new_topo)
+        for layer, level in enumerate(topo):
+            for node in level:
+                mk = None
+                if type(node) == int:
+                    # get counts of node types per layer
+                    mk = tuple(sum(g.a == node for g in lns) for l, lns in l2n.items())
+
+                pred = tuple(sorted([self.nodes[u]['hash'] for u in self.pred[node]]))
+                
+                me = tuple((layer, types[node], inD[node], outD[node]))
+                
+                # print(f"{node} @ L{layer}:\n  {pred} {mk} {me}")
+                h = hash((me, mk, pred))
+                self.nodes[node]['hash'] = h
+
+        # for n in self.nodes:
+        #     # print(f"{n} {self.nodes[n]['hash']}")
+        #     pass
+
+        # for w in sorted(
+        #     filter(lambda t: type(t) == int, self.nodes),
+        #     key=lambda n: self.nodes[n]['hash']
+        # ):
+        # assert all_unique([self.nodes[n]['hash'] for n in filter(lambda t: type(t) == int and len(self.pred[t]) > 0, self.nodes)])
+
+    def _colors(self):
+        return list(map(lambda n: 'gray' if type(n) == int else 'k', self.nodes))
+
+    def _label(self, g):
+        if type(g) == int:
+            return g
+        else:
+            return str(g).replace("[", "\n")[:-1]
+
+    def r_neighborhood(self, v, r):
+        ngh = nx.single_source_shortest_path_length(self, v, cutoff=r).keys()
+        return list(ngh)
+
+    
+    def deg_profile(self):
+        D = defaultdict(tuple)
+        last = None
+        for o in it.count():
+            dp = self._deg_profile(o)
+            dpv = sorted(dp.values())
+            print(dpv)
+            if dpv == last:
+                print("no change, exit")
+                break
+
+            last = dpv
+
+            for n, r in dp.items():
+                if D[n]:
+                    D[n] = tuple((*D[n], r))
+                else:
+                    D[n] = r
+
+            if len(set(D.values())) == len(D):
+                print("unique, exit")
+                break
+
+        print(f"done @ order {o}")
+        print(D)
+        return tuple(sorted(D.values()))
+
+    def _deg_profile(self, order):
+        """
+        degree profile for isomorphism testing.
+        order = 1: all nodes and their degrees
+        order = 2: degrees of all neighbors
+
+        for order r, this gives the degree profile of the r-neighborhood of each
+        node.
+        """
+
+        inD = self.in_degree(weight="weight")
+        outD = self.out_degree(weight="weight") 
+ 
+        all_degrees = {n: (EdgeWeight(inD[n]), EdgeWeight(outD[n])) for n in self.nodes}
+
+        # print(all_degrees)
+
+        def node_type(n):
+            return NodeType.Wire if type(n) == int else NodeType.Gate,
+
+        # sort by manhattan distance first, then real, then imag (tuple)
+        def norm(c):
+            re = c.real
+            im = c.imag
+            return (abs(re) + abs(im), re, im)
+
+        L = {}
+        for v in self.nodes:
+            ws = self.r_neighborhood(v, order)
+
+            t = tuple(
+                sorted(
+                    [all_degrees[w] for w in ws],
+                    key=lambda x: (node_type(x), norm(x[0]), norm(x[1])),
+                )
+            )
+            L[v] = t
+
+        return L
 
     def draw(self):
+        nx.set_node_attributes(self, -10, name='layer')
+
+        # sub = self.subgraph(self.graph['gates'])
         gen = list(nx.topological_generations(self))
 
         for layer, nodes in enumerate(gen):
@@ -333,17 +535,29 @@ class SkeletonGraph(nx.DiGraph):
 
         pos = nx.multipartite_layout(self, subset_key="layer")
 
+        # xp = 0
+        # min_x = min(map(lambda x: x[0], pos.values()))
+        # max_x = max(map(lambda x: x[0], pos.values()))
+        # min_y = min(map(lambda x: x[1], pos.values()))
+
+        # space = (max_x - min_x) / self.graph['wires']
+
+        # for n, (x, y) in pos.items():
+        #     if type(n) == int:
+        #         pos[n] = (xp, min_y)
+        #         xp += space
+
         nx.draw(
             self,
             pos=pos,
             with_labels=False,
             connectionstyle="arc3,rad=0.4",
-            node_color="black",
+            node_color=self._colors(),
             edge_color=[random.choice(plt.cm.Dark2.colors) for _ in self.nodes],
             node_size=1200,
         )
 
-        labels = {node: str(node).replace("[", "\n")[:-1] for node in self}
+        labels = {node: self._label(node) for node in self}
         nx.draw_networkx_labels(
             self,
             pos=pos,

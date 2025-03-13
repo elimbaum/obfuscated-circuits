@@ -263,9 +263,9 @@ class Circuit:
 
 
 def random_circuit(n, m):
-    b = list(base_perms(n))
-    # deepcopy required here so each gate is "unique
-    return Circuit([random.choice(b) for _ in range(m)])
+b = list(base_perms(n))
+# deepcopy required here so each gate is "unique
+return Circuit([random.choice(b) for _ in range(m)])
 
 
 n = 8
@@ -588,4 +588,34 @@ pprint(G)
 sum(1 if len(v) == 1 else 0 for v in G.values())
 # %%
 len(G)
+# %%
+
+
+def second(x):
+    return tuple(map(lambda y: y[1], x))
+
+G = map(SkeletonGraph.from_circuit, all_circuits(3, 3))
+
+dv = map(lambda g: (tuple(zip(second(g.in_degree), second(g.out_degree)))), G)
+s = set(dv)
+print(f"{len(s)} unique degree assignments")
+pprint(s)
+
+# %%
+c = random_circuit(8, 8)
+print(c)
+
+# %%
+from circuit_lib import SkeletonGraph as sg
+c = random_circuit(8, 8)
+g = sg.from_circuit(c, True)
+
+
+## TODO FROM RENE: color edges
+
+# %%
+print(c)
+g.draw()
+# %%
+
 # %%

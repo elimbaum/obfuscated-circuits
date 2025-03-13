@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 
 import circuit_lib as lib
-from rich.progress import Progress
+from rich.progress import (
+    Progress,
+    BarColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+    MofNCompleteColumn,
+    TransferSpeedColumn,
+)
 from collections import defaultdict
 import multiprocessing as mp
 import os
@@ -12,6 +19,8 @@ import gzip
 
 n = 5
 m = 8
+
+CHUNKSIZE = 1 << 10
 
 def invert(perm):
     n = len(perm)
@@ -39,12 +48,23 @@ def generate_new(n, m_):
 
     print(f"Checking {count} circuits...")
 
-    with Progress() as prog:
+    with Progress(
+            "[progress.description]{task.description}",
+            MofNCompleteColumn(),
+            BarColumn(),
+            "[progress.percentrage]{task.percentage:>3.0f}%",
+            TimeElapsedColumn(),
+            "ETA",
+            TimeRemainingColumn(),
+            TransferSpeedColumn(),
+            refresh_per_second=4,
+            speed_estimate_period=120
+        ) as prog:
         task = prog.add_task("Build circuits...", total=count)
 
-        with mp.Pool(os.process_cpu_count() // 2) as pool:
+        with mp.Pool(os.cpu_count() // 2) as pool:
             par = pool.imap_unordered(
-                ckt_work, all_ckt
+                ckt_work, all_ckt, CHUNKSIZE
             )
 
             for c in par:

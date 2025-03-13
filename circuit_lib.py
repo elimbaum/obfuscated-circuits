@@ -22,67 +22,68 @@ import multiprocessing as mp
 import os
 
 class GateT(Enum):
-    NOT = "N"
-    CNOT = "C"
-    CCNOT = "T"
+    # A regular CNOT gate.
+    # a' = a ^ b
+    CNOT   = "C"
+    # An inverted CNOT gate
+    # a' = ! (a ^ b)
+    nCNOT  = "nC"
+    # Toffoli gate
+    # a' = a ^ (b & c)
+    TOF  = "T"
+    # Inverted Toffoli gate
+    # a' = a  ^ !(b & c)
+    nTOF = "nT"
 
 
 class Gate:
     """A general CxNOT gate."""
 
     c = []
+    inverted = False
 
-    def __init__(self, a, c1=None, c2=None):
+    def __init__(self, a, c1, c2=None, inverted=False):
         assert type(a) is int
-        if c1 is None:
-            # NOT gate
-            self.a = a
-            self.c = ()
-            self.type = GateT.NOT
-        elif c2 is None:
+        self.inverted = inverted
+        
+        if c2 is None:
             # CNOT gate
             assert type(c1) is int
             self.a = a
             self.c = (c1,)
-            self.type = GateT.CNOT
+            self.type = GateT.nCNOT if inverted else GateT.CNOT
         else:
-            # CCNOT gate
+            # TOF gate
             assert type(c1) is int and type(c2) is int
             self.a = a
             self.c = (c1, c2)
-            self.type = GateT.CCNOT
+            self.type = GateT.nTOF if inverted else GateT.TOF
 
+    # extents of the gate
     def top(self):
-        if self.type == GateT.NOT:
-            return self.a
-        else:
-            return min(self.a, min(self.c))
+        return min(self.a, min(self.c))
 
     def bottom(self):
-        if self.type == GateT.NOT:
-            return self.a
-        else:
-            return max(self.a, max(self.c))
+        return max(self.a, max(self.c))
 
     def wires(self):
         return [self.a, *sorted(self.c)]
 
-    # For NOT and CNOT, default arguments give proper results
-    def eval(self, a_val, c1_val=True, c2_val=True):
-        return a_val ^ (c1_val & c2_val)
+    # For CNOT, default argument gives proper results
+    def eval(self, a_val, c1_val, c2_val=True):
+        return a_val ^ self.inverted ^ (c1_val & c2_val)
 
     def __str__(self, show_id=False):
         name = self.type.value if not show_id else f"{self.type.value}#{id(self)}"
-        if self.type == GateT.NOT:
-            return f"{self.type.value}[{self.a}]"
         return f"{name}[{self.a}; {' '.join(map(str, self.c))}]"
 
     def compact(self):
-        short_type = {GateT.NOT: "N", GateT.CNOT: "C", GateT.CCNOT: "T"}[self.type]
+        short_type = self.type.value
         return f"{short_type}[{self.a},{' '.join(map(str, self.c))}]"
 
     # Define a lexicographical ordering over Gates
     def __lt__(self, other, check_id=True):
+        # CNOTs before TOFs
         if len(self.c) < len(other.c):
             return True
 
@@ -94,7 +95,8 @@ class Gate:
         other_id = id(other) if check_id else None
 
         # use built-in tuple comparison
-        return (self.a, *self.c, self_id) < (other.a, *other.c, other_id)
+        # ID is used to disambiguate identically-connected gates
+        return (self.inverted, self.a, *self.c, self_id) < (other.inverted, other.a, *other.c, other_id)
 
     def __repr__(self):
         return self.__str__()
@@ -103,45 +105,45 @@ class Gate:
         return hash((self.type, self.a, tuple(self.c)))
     
     def copy(self):
-        return Gate(self.a, *self.c)
+        if len(self.c) == 1:
+            return Gate(self.a, self.c[0], None, self.inverted)
+        else:
+            return Gate(self.a, *self.c, self.inverted)
 
 
 class CanonicalGate(Gate):
-    # def __init__(self, a, c1=None, c2=None):
-    #     super().__init__(a, c1, c2)
-
     def __eq__(self, other):
         return self.type == other.type and self.a == other.a and self.c == other.c
 
     def __lt__(self, other):
         r = super().__lt__(other, check_id=False)
-        # print(f"{self} {'<' if r else '>='} {other}")
         return r
 
     def __hash__(self):
         return super().__hash__()
-
 
 def base_perms(n):
     """Generates all base permutations over $n$ wires."""
 
     # Tof gates
     for active in range(n):
-        other = (i for i in range(n) if i != active)
-        yield from (Gate(active, c[0], c[1]) for c in it.combinations(other, 2))
+        o1, o2 = it.tee((i for i in range(n) if i != active))
+        # TOF
+        yield from (Gate(active, c[0], c[1]) for c in it.combinations(o1, 2))
+        # nTOF
+        yield from (Gate(active, c[0], c[1], True) for c in it.combinations(o2, 2))
 
     # CNOT gates
     for active in range(n):
-        other = (i for i in range(n) if i != active)
-        yield from (Gate(active, c) for c in other)
-
-    # NOT gates
-    yield from (Gate(active) for active in range(n))
+        o1, o2 = it.tee(i for i in range(n) if i != active)
+        # CNOT
+        yield from (Gate(active, c) for c in o1)
+        # nCNOT
+        yield from (Gate(active, c, None, True) for c in o2)
 
 def zero_active_perms(n):
     b = base_perms(n)
     yield from filter(lambda g: g.a == 0, b)
-
 
 class Circuit:
     gates = []
@@ -218,10 +220,10 @@ class Circuit:
             s += f"{w:>3} {CKT_WIRE_CHAR}"
             for g in self.gates:
                 if w == g.a:
-                    if g.type == GateT.NOT:
-                        s += "[!]"
+                    if g.inverted:
+                        s += "(!)"
                     else:
-                        s += "[&]"
+                        s += "( )"
                 elif w in g.c:
                     s += CKT_WIRE_CHAR + CKT_DOT_CHAR + CKT_WIRE_CHAR
                 elif w > g.top() and w < g.bottom():
@@ -316,6 +318,8 @@ class SkeletonGraph(nx.DiGraph):
         if augmented:
             sk.add_nodes_from(range(ckt.wires))
 
+        sk.add_nodes_from(ckt.gates)
+
         for g in ckt.gates:
             # get control pins on this active pin
             back = control_set[g.a]
@@ -397,6 +401,15 @@ class SkeletonGraph(nx.DiGraph):
         return sum(
             self[u][n].get(label, 0) for u in self.pred[n]
         )
+    
+    def sorted_gates(self):
+        topo = list(nx.topological_generations(self))
+
+        out = []
+        for layer in topo:
+            out.extend(sorted(layer))
+
+        return out
 
     def canonical(self):
         topo = list(nx.topological_generations(self))
@@ -441,7 +454,16 @@ class SkeletonGraph(nx.DiGraph):
         # assert all_unique([self.nodes[n]['hash'] for n in filter(lambda t: type(t) == int and len(self.pred[t]) > 0, self.nodes)])
 
     def _colors(self):
-        return list(map(lambda n: 'gray' if type(n) == int else 'k', self.nodes))
+        def _color_sel(n):
+            if type(n) == int:
+                # wires (augmented graph)
+                return 'lightblue'
+            else:
+                if n.inverted:
+                    return 'k'
+                else:
+                    return 'w'
+        return list(map(_color_sel, self.nodes))
 
     def _label(self, g):
         if type(g) == int:
@@ -453,7 +475,6 @@ class SkeletonGraph(nx.DiGraph):
         ngh = nx.single_source_shortest_path_length(self, v, cutoff=r).keys()
         return list(ngh)
 
-    
     def deg_profile(self):
         D = defaultdict(tuple)
         last = None
@@ -553,6 +574,7 @@ class SkeletonGraph(nx.DiGraph):
             with_labels=False,
             connectionstyle="arc3,rad=0.4",
             node_color=self._colors(),
+            edgecolors='k', # node outline
             edge_color=[random.choice(plt.cm.Dark2.colors) for _ in self.nodes],
             node_size=1200,
         )
@@ -563,7 +585,7 @@ class SkeletonGraph(nx.DiGraph):
             pos=pos,
             labels=labels,
             font_size=8,
-            font_color="white",
+            font_color='gray',
             font_weight="bold",
         )
 

@@ -144,8 +144,6 @@ def main():
         print("[Inverse]\n" if i else "", end='')
         print(lib.Circuit(k))
 
-
-
-
 if __name__ == '__main__':
+    mp.set_start_method('spawn')
     main()

@@ -174,7 +174,7 @@ class Permutation(tuple):
 
                 visited[dest] = True
                 c.append(dest)
-                dest = p[dest]
+                dest = self.t[dest]
 
         return tuple(cycle)
     
@@ -462,6 +462,7 @@ class SkeletonGraph(nx.DiGraph):
         )
     
     def sorted_gates(self):
+        # use nx.lexicographical_topological_sort instead
         topo = list(nx.topological_generations(self))
 
         out = []

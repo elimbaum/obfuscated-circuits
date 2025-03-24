@@ -46,9 +46,9 @@ class Circuit():
 
         for i in range(2**n):
             b = format(i, "0{}b".format(n))
-            out_list = self.eval(list(map(int, b)))
+            out_list = self.eval(list(map(int, reversed(b))))
 
-            out_n = reduce(lambda a, b: (a << 1) | b, out_list, 0)
+            out_n = reduce(lambda a, b: (a << 1) | b, reversed(out_list), 0)
             p.append(out_n)
 
         return tuple(p)
@@ -277,7 +277,7 @@ def cmd(q):
         for i, j in enumerate(p):
             diffs = j ^ i
             os = f"{diffs:>03b}".replace("0", ".")
-            print(f"{i:2}  {j:2} {j:>03b} {os}")
+            print(f"{i:2}  {j:2} {j:>04b} {os}")
 
 while not q or not q.startswith("q"):
     if q:

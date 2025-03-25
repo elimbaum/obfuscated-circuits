@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"golang.org/x/exp/slices"
 	"gonum.org/v1/gonum/stat/combin"
 )
 
@@ -37,6 +38,25 @@ func (g Gate) eval(input int) int {
 
 func (g Gate) Repr() string {
 	return fmt.Sprintf("%d %d %d", g.Active, g.Ctrl1, g.Ctrl2)
+}
+
+func (g Gate) Collides(h Gate) bool {
+	return (g.Active == h.Ctrl1 || g.Active == h.Ctrl2 ||
+		h.Active == g.Ctrl1 || h.Active == g.Ctrl2)
+}
+
+func (g Gate) Ordered(h Gate) bool {
+	if g.Active > h.Active {
+		return false
+	} else if g.Active == h.Active {
+		if g.Ctrl1 > h.Ctrl1 {
+			return false
+		} else if g.Ctrl1 == h.Ctrl1 {
+			return g.Ctrl2 <= h.Ctrl2
+		}
+	}
+
+	return true
 }
 
 // A collection of gates on `n` wires
@@ -121,6 +141,45 @@ func (c Circuit) Repr() string {
 	}
 
 	return sb.String()
+}
+
+func FromString(s string) Circuit {
+	var gates []Gate
+	for _, gs := range strings.Split(s, ";") {
+		if gs == "" {
+			continue
+		}
+
+		var g Gate
+		fmt.Sscanf(gs, "%d %d %d", &g.Active, &g.Ctrl1, &g.Ctrl2)
+		gates = append(gates, g)
+	}
+
+	return MakeCircuit(gates)
+}
+
+func (c Circuit) Canonicalize() {
+	// insertion sort-based
+	for i := 1; i < len(c.Gates); i++ {
+		gi := c.Gates[i]
+		j := i - 1
+		swap := false
+		for ; j >= 0; j-- {
+			if c.Gates[j].Collides(gi) || !c.Gates[j].Ordered(gi) {
+				swap = true
+				break
+			}
+		}
+
+		j++
+
+		if swap && j < i {
+			// fmt.Printf("Move %d to %d\n", i, j)
+			g := c.Gates[i]
+			remove := append(c.Gates[:i], c.Gates[i+1:]...)
+			c.Gates = slices.Insert(remove, j, g)
+		}
+	}
 }
 
 func adjacentRepeats(x []int) bool {

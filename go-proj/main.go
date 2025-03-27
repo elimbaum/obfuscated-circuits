@@ -6,6 +6,7 @@ import (
 	"math"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/exp/slices"
@@ -108,31 +109,106 @@ type PR struct {
 	Canonical bool
 }
 
+var BaseGates []ckt.Gate
+
+var n_perms atomic.Uint64
+var ckt_check atomic.Uint64
+var skip_inv atomic.Uint64
+var ckt_i atomic.Uint64
+var skip_id atomic.Uint64
+
+// Take as input a bunch of circuits and output a batch of permutations
+func buildCircuit(wires, gates, workers int, ckt_ch <-chan []int) <-chan []PR {
+	var wg sync.WaitGroup
+
+	const BATCH_SIZE = 1024
+
+	perm_ch := make(chan []PR)
+
+	go func() {
+		defer close(perm_ch)
+		for w := 0; w < workers; w++ {
+			wg.Add(1)
+
+			// Each worker fills up a batch
+			batch := make([]PR, BATCH_SIZE)
+			bidx := 0
+
+			go func() {
+				defer wg.Done()
+
+				// Temporary to hold gates
+				C := make([]ckt.Gate, gates)
+
+				for cc := range ckt_ch {
+					ckt_i.Add(1)
+
+					for i, g := range cc {
+						C[i] = BaseGates[g]
+					}
+
+					// Build the circuit, and manually specify number of wires
+					// This is necessary in case terminal wires are not touched by
+					// any gate (they they will be auto-removed)
+					c := ckt.MakeCircuit(C)
+					c.Wires = wires
+
+					// Compute circuit's canonical repr; skip if any adjacent
+					// duplicates
+					c.Canonicalize()
+					if c.AdjacentId() {
+						skip_id.Add(1)
+						continue
+					}
+
+					p := c.Perm()
+					cp := p.Canonical()
+					isCanonicalPerm := slices.Equal(p, cp)
+
+					// if slices.Equal(cp, []int{0, 1, 3, 2, 7, 5, 6, 4}) {
+					// 	fmt.Println("====")
+					// 	fmt.Println(c)
+					// 	fmt.Println(p)
+					// 	fmt.Println(cp, isCanonicalPerm)
+					// }
+
+					batch[bidx] = PR{P: cp, R: c.Repr(), Canonical: isCanonicalPerm}
+					bidx++
+
+					if bidx >= BATCH_SIZE {
+						perm_ch <- batch
+						batch = make([]PR, BATCH_SIZE)
+						bidx = 0
+					}
+				}
+
+				// might have some left
+				perm_ch <- batch[:bidx]
+			}()
+		}
+		wg.Wait()
+	}()
+
+	return perm_ch
+}
+
 func main() {
 	n := 5
 	m := 5
-	ch := ckt.AllCircuits(n, m)
+	ch := ckt.ParAllCircuits(n, m)
 
 	ckt.Init(n)
 
 	bp := ckt.BaseGates(n)
-	B := make([]ckt.Gate, len(bp))
+	BaseGates = make([]ckt.Gate, len(bp))
 	for i, b := range bp {
-		B[i] = ckt.MakeGate(b[0], b[1], b[2])
+		BaseGates[i] = ckt.MakeGate(b[0], b[1], b[2])
 	}
-
-	C := make([]ckt.Gate, m)
-
-	// Counter := make(map[string]*PermStore)
 	var CircuitStore sync.Map
 	// c2p := make(map[string]string)
 
-	total_ckt := float64(len(B)) * math.Pow(float64(len(B)-1), float64(m-1))
-	fmt.Println("Circuits:", total_ckt)
-
-	ckt_i := 0
-	skip_id := 0
-	skip_inv := 0
+	total_ckt := float64(len(BaseGates)) * math.Pow(float64(len(BaseGates)-1), float64(m-1))
+	fmt.Printf("n=%d, m=%d. circuits: %d\n", n, m, int64(total_ckt))
 
 	go func() {
 		start := time.Now()
@@ -148,70 +224,17 @@ func main() {
 
 			runtime.ReadMemStats(&m)
 			mib_used := m.Alloc / 1024 / 1024
-			kper_second := float64(ckt_i/int(elapsed.Seconds())) / 1000
-			eta := int((total_ckt - float64(ckt_i)) / kper_second / 1000)
-			fmt.Printf("@ %.1fM, %.1fk/s ETA: %d sec (mem: %d MiB)\n", float64(ckt_i)/1000000, kper_second, eta, mib_used)
+			ci := ckt_i.Load()
+			kper_second := float64(ci/(uint64(elapsed.Seconds()))) / 1000
+			eta := int((total_ckt - float64(ci)) / kper_second / 1000)
+			fmt.Printf("@ %.1fM, %.1fk/s ETA: %d sec (mem: %d MiB)\n", float64(ci)/1000000, kper_second, eta, mib_used)
 		}
 	}()
 
-	const BATCH_SIZE = 16384
-	pch := make(chan []PR)
+	perm_ch := buildCircuit(n, m, runtime.NumCPU(), ch)
 
-	go func() {
-		index := 0
-		batch := make([]PR, BATCH_SIZE)
-
-		for cc := range ch {
-			ckt_i += 1
-			for i, g := range cc {
-				C[i] = B[g]
-			}
-
-			// Build the circuit...
-			c := ckt.MakeCircuit(C)
-			// Enforce `n` wires in case terminal wires have no gates on them
-			// (in that case auto-sizing would shrink the circuit)
-			c.Wires = n
-
-			// ...and compute its canonical representation
-			c.Canonicalize()
-			if c.AdjacentId() {
-				// Skip circuits with a trivial identity = pair of adjacent
-				// identical gates
-				skip_id += 1
-				continue
-			}
-
-			// Compute the permutation, and its bit-shuffled canonicalization
-			isCanonicalPerm := false
-			var p []int
-			{
-				p_raw := c.Perm()
-				p = p_raw.Canonical()
-				isCanonicalPerm = slices.Equal(p_raw, p)
-			}
-
-			batch[index] = PR{P: p, R: c.Repr(), Canonical: isCanonicalPerm}
-
-			index++
-			if index == BATCH_SIZE {
-				pch <- batch
-				batch = make([]PR, BATCH_SIZE)
-				index = 0
-				// fmt.Println("Sent batch")
-			}
-			// pch <- PR{P: p, R: c.Repr(), Canonical: isCanonicalPerm}
-		}
-		// remaining
-		pch <- batch[:index]
-
-		close(pch)
-	}()
-
-	WORKERS := runtime.NumCPU() - 2
+	WORKERS := 1
 	fmt.Println(WORKERS, "workers launching")
-
-	n_perms := 0
 
 	var wg sync.WaitGroup
 
@@ -220,8 +243,10 @@ func main() {
 
 		go func() {
 			defer wg.Done()
-			for batch := range pch {
+			for batch := range perm_ch {
+				// _ = batch
 				for _, pr := range batch {
+					ckt_check.Add(1)
 					if pr.P == nil {
 						fmt.Println("nil perm")
 						continue
@@ -232,14 +257,16 @@ func main() {
 					ip := invertPerm(p)
 					ownInv := slices.Equal(p, ip)
 
-					// Generate the string repr
-					ph := PermString(p)
+					if !ownInv {
+						// Generate the string repr
+						ph := PermString(p)
 
-					// Check if we've already seen this perm's (unique) inverse.
-					// If so, skip
-					if _, ok := CircuitStore.Load(ph); ok && !ownInv {
-						skip_inv += 1
-						continue
+						// Check if we've already seen this perm's (unique) inverse.
+						// If so, skip
+						if _, ok := CircuitStore.Load(ph); ok {
+							skip_inv.Add(1)
+							continue
+						}
 					}
 
 					// At this point: either we haven't yet seen this perm's inverse, or it
@@ -250,7 +277,7 @@ func main() {
 					if !ok {
 						store = NewPermStore(p)
 						CircuitStore.Store(iph, store)
-						n_perms += 1
+						n_perms.Add(1)
 					} else {
 						store = _st.(*PermStore)
 					}
@@ -271,16 +298,26 @@ func main() {
 	wg.Wait()
 
 	totalStore := 0
+	all := 0
 	CircuitStore.Range(func(k any, v any) bool {
 		pp, _ := v.(*PermStore)
-		pp.Ckts.Range(func(k any, v any) bool { totalStore += 1; return true })
+		canonical := 0
+		pp.Ckts.Range(func(k any, v any) bool { canonical += 1; return true })
+
+		totalStore += canonical
+		all += pp.Count
 
 		// if len(pp.Ckts) <= 1 {
 		// 	return true
 		// }
 
+		if canonical == 0 {
+			fmt.Println("ERROR! No canonical")
+			fmt.Println(" ", pp.Perm, pp.Count)
+		}
+
 		// fmt.Println("====")
-		// fmt.Printf("%v %v total; %v canon\n", pp.Perm, pp.Count) //, len(pp.Ckts))
+		// fmt.Printf("%v %v total; %v canon\n", pp.Perm, pp.Count, canonical)
 
 		// for c, _ := range pp.Ckts {
 		// fmt.Println(c)
@@ -292,15 +329,17 @@ func main() {
 	fmt.Println("===========================")
 	fmt.Printf("Total n=%d,m=%d circuits: %d\n", n, m, int(total_ckt))
 
+	fmt.Println("  Received from circuit gen:", ckt_i.Load())
+	fmt.Println("  Skipped b/c trivial Id:", skip_id.Load())
+	fmt.Println("  Circuits checked:", ckt_check.Load())
+	fmt.Println("  Skipped b/c saw inverse:", skip_inv.Load())
 	fmt.Println("  Circuits stored:", totalStore)
+	fmt.Println("  Total count:", all)
 
 	// fmt.Println(Counter[PermString([]int{7, 6, 5, 4, 3, 2, 1, 0})])
 
 	// fmt.Println(len(c2p))
-	fmt.Println("  Canonical perms:", n_perms)
-
-	fmt.Println("  Skipped b/c trivial Id:", skip_id)
-	fmt.Println("  Skipped b/c saw inverse:", skip_inv)
+	fmt.Println("  Canonical perms:", n_perms.Load())
 
 	// fmt.Println("NumCktPerPerm Occurences")
 	// for i, p := range CktCountCount {

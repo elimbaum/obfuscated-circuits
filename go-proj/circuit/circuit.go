@@ -3,6 +3,7 @@ package circuit
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"golang.org/x/exp/slices"
 	"gonum.org/v1/gonum/stat/combin"
@@ -223,45 +224,56 @@ func BaseGates(n int) [][]int {
 	return combin.Permutations(n, 3)
 }
 
-func AllCircuits(wires, gates int) chan []int {
-	// Represent circuits as indices into an array of gates (represented as an
-	// array of pins) -- minimize object construction for memory efficiency.
-	B := BaseGates(wires)
-	z := len(B)
-
-	g := make([]int, gates)
-
+func ParAllCircuits(wires, gates int) chan []int {
 	ch := make(chan []int)
 
+	B := BaseGates(wires)
+	z := int64(len(B))
+	total := int64(1)
+	for i := 0; i < gates; i++ {
+		total *= z
+	}
+
 	go func() {
+		WORKERS := 1
+		work_ch := make(chan int64)
+
 		defer close(ch)
-		for {
-			h := make([]int, gates)
 
-			s := 0
-			for {
-				// increment this digit
-				g[s] += 1
-				// too far?
-				if g[s] >= z {
-					// reset
-					g[s] = 0
-					s++
-				} else if s+1 < gates && g[s] == g[s+1] {
-					// no repeats!
-					continue
-				} else {
-					break
+		var wg sync.WaitGroup
+
+		// Represent gates as `gates`-digit, base-`z` numbers
+		for w := 0; w < WORKERS; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				send := true
+				for i := range work_ch {
+					send = true
+					s := make([]int, gates)
+					for j := 0; j < gates; j++ {
+						s[j] = int(i % z)
+						i /= z
+
+						if j > 0 && s[j] == s[j-1] {
+							send = false
+							break
+						}
+					}
+					if send {
+						ch <- s
+					}
 				}
-
-				if s >= gates {
-					return
-				}
-			}
-
-			copy(h, g)
-			ch <- h
+			}()
 		}
+
+		for i := int64(0); i < total; i++ {
+			work_ch <- i
+		}
+
+		close(work_ch)
+
+		wg.Wait()
 	}()
 
 	return ch

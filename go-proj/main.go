@@ -110,7 +110,7 @@ type PR struct {
 
 func main() {
 	n := 4
-	m := 5
+	m := 6
 	ch := ckt.AllCircuits(n, m)
 
 	bp := ckt.BaseGates(n)
@@ -152,7 +152,7 @@ func main() {
 		}
 	}()
 
-	const BATCH_SIZE = 16384
+	const BATCH_SIZE = 1024
 	pch := make(chan []PR)
 
 	go func() {
@@ -198,9 +198,11 @@ func main() {
 				batch = make([]PR, BATCH_SIZE)
 				index = 0
 			}
-
 			// pch <- PR{P: p, R: c.Repr(), Canonical: isCanonicalPerm}
 		}
+		// remaining
+		pch <- batch[:index]
+
 		close(pch)
 	}()
 
@@ -218,6 +220,10 @@ func main() {
 			defer wg.Done()
 			for batch := range pch {
 				for _, pr := range batch {
+					if pr.P == nil {
+						fmt.Println("nil perm")
+						continue
+					}
 					// Check if this permutation is its own inverse
 					p := pr.P
 
@@ -271,13 +277,13 @@ func main() {
 			return true
 		}
 
-		fmt.Println("====")
-		fmt.Printf("%v %v total; %v canon\n", pp.Perm, pp.Count, len(pp.Ckts))
+		// fmt.Println("====")
+		// fmt.Printf("%v %v total; %v canon\n", pp.Perm, pp.Count, len(pp.Ckts))
 
-		for c, _ := range pp.Ckts {
-			fmt.Println(c)
-			// fmt.Println(ckt.FromStringCompressed(c))
-		}
+		// for c, _ := range pp.Ckts {
+		// fmt.Println(c)
+		// fmt.Println(ckt.FromStringCompressed(c))
+		// }
 		return true
 	})
 

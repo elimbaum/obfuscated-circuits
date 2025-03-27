@@ -200,6 +200,8 @@ func (c Circuit) Canonicalize() {
 }
 
 // Does this circuit contain two adjacent gates? (and thus a trivial identity)
+// Canonicalized circuits will necessarily sort identical gates at the same topo
+// level next to eachother
 func (c Circuit) AdjacentId() bool {
 	for i := 0; i < len(c.Gates)-1; i++ {
 		if c.Gates[i] == c.Gates[i+1] {

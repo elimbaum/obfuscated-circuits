@@ -2,7 +2,6 @@ package circuit
 
 import (
 	"fmt"
-	"math/bits"
 	"strings"
 
 	"golang.org/x/exp/slices"
@@ -228,34 +227,55 @@ func AllCircuits(wires, gates int) chan []int {
 	// Represent circuits as indices into an array of gates (represented as an
 	// array of pins) -- minimize object construction for memory efficiency.
 	B := BaseGates(wires)
+	z := len(B)
 
-	z := make([]int, gates)
-	for i := 0; i < gates; i++ {
-		z[i] = len(B)
-	}
+	g := make([]int, gates)
 
 	ch := make(chan []int)
 
 	go func() {
-		gen := combin.NewCartesianGenerator(z)
-		for gen.Next() {
-			p := gen.Product(nil)
+		defer close(ch)
+		for {
+			h := make([]int, gates)
 
-			if adjacentRepeats(p) {
-				continue
+			s := 0
+			for {
+				// increment this digit
+				g[s] += 1
+				// too far?
+				if g[s] >= z {
+					// reset
+					g[s] = 0
+					s++
+				} else if s+1 < gates && g[s] == g[s+1] {
+					// no repeats!
+					continue
+				} else {
+					break
+				}
+
+				if s >= gates {
+					return
+				}
 			}
-			ch <- p
+
+			copy(h, g)
+			ch <- h
 		}
-		close(ch)
 	}()
 
 	return ch
 }
 
+var bit_shuf [][]int
+
+func Init(n int) {
+	bit_shuf = combin.Permutations(n, n)[1:]
+}
+
 // Find the canonical bit-shuffling of p
 func (p Permutation) Canonical() []int {
 	n := len(p)
-	bw := bits.Len(uint(n - 1))
 
 	// store minimal bit permutation in here
 	// to start, load with the current perm (unshuffled)
@@ -269,7 +289,7 @@ func (p Permutation) Canonical() []int {
 	s := make([]int, n)
 
 	// skip the first one, because that is the identity
-	for _, r := range combin.Permutations(bw, bw)[1:] {
+	for _, r := range bit_shuf {
 		for src, dst := range r {
 			// map bit `src` to bit `dst`
 			for i := range p {

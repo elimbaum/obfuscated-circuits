@@ -22,21 +22,21 @@ func PermString(slice []int) string {
 
 type PermStore struct {
 	Perm  []int
-	Ckts  map[string]bool
+	Ckts  sync.Map
 	Count int
 }
 
 func NewPermStore(s []int) *PermStore {
 	ps := new(PermStore)
 	(*ps).Perm = s
-	(*ps).Ckts = make(map[string]bool)
+	// (*ps).Ckts = make(map[string]bool)
 	(*ps).Count = 0
 	return ps
 }
 
 func (p *PermStore) addCircuit(repr string) {
 	(*p).Count += 1
-	(*p).Ckts[repr] = true
+	(*p).Ckts.Store(repr, true)
 }
 
 func (p *PermStore) increment() {
@@ -109,9 +109,11 @@ type PR struct {
 }
 
 func main() {
-	n := 4
-	m := 6
+	n := 5
+	m := 5
 	ch := ckt.AllCircuits(n, m)
+
+	ckt.Init(n)
 
 	bp := ckt.BaseGates(n)
 	B := make([]ckt.Gate, len(bp))
@@ -152,7 +154,7 @@ func main() {
 		}
 	}()
 
-	const BATCH_SIZE = 1024
+	const BATCH_SIZE = 16384
 	pch := make(chan []PR)
 
 	go func() {
@@ -160,7 +162,6 @@ func main() {
 		batch := make([]PR, BATCH_SIZE)
 
 		for cc := range ch {
-
 			ckt_i += 1
 			for i, g := range cc {
 				C[i] = B[g]
@@ -197,6 +198,7 @@ func main() {
 				pch <- batch
 				batch = make([]PR, BATCH_SIZE)
 				index = 0
+				// fmt.Println("Sent batch")
 			}
 			// pch <- PR{P: p, R: c.Repr(), Canonical: isCanonicalPerm}
 		}
@@ -271,14 +273,14 @@ func main() {
 	totalStore := 0
 	CircuitStore.Range(func(k any, v any) bool {
 		pp, _ := v.(*PermStore)
-		totalStore += len(pp.Ckts)
+		pp.Ckts.Range(func(k any, v any) bool { totalStore += 1; return true })
 
-		if len(pp.Ckts) <= 1 {
-			return true
-		}
+		// if len(pp.Ckts) <= 1 {
+		// 	return true
+		// }
 
 		// fmt.Println("====")
-		// fmt.Printf("%v %v total; %v canon\n", pp.Perm, pp.Count, len(pp.Ckts))
+		// fmt.Printf("%v %v total; %v canon\n", pp.Perm, pp.Count) //, len(pp.Ckts))
 
 		// for c, _ := range pp.Ckts {
 		// fmt.Println(c)

@@ -101,15 +101,9 @@ func main2() {
 	// 0 2 1;1 2 0;1 2 3;1 0 3;
 }
 
-type PR struct {
-	P         ckt.Permutation
-	R         string
-	Canonical bool
-}
-
 func main() {
 	n := 4
-	m := 6
+	m := 5
 	ch := ckt.AllCircuits(n, m)
 
 	bp := ckt.BaseGates(n)
@@ -150,47 +144,35 @@ func main() {
 		}
 	}()
 
-	pch := make(chan PR)
-
-	go func() {
-		for cc := range ch {
-			ckt_i += 1
-			for i, g := range cc {
-				C[i] = B[g]
-			}
-
-			// Build the circuit...
-			c := ckt.MakeCircuit(C)
-			// Enforce `n` wires in case terminal wires have no gates on them
-			// (in that case auto-sizing would shrink the circuit)
-			c.Wires = n
-
-			// ...and compute its canonical representation
-			c.Canonicalize()
-			if c.AdjacentId() {
-				// Skip circuits with a trivial identity = pair of adjacent
-				// identical gates
-				skip_id += 1
-				continue
-			}
-
-			// Compute the permutation, and its bit-shuffled canonicalization
-			isCanonicalPerm := false
-			var p []int
-			{
-				p_raw := c.Perm()
-				p = p_raw.Canonical()
-				isCanonicalPerm = slices.Equal(p_raw, p)
-			}
-
-			pch <- PR{P: p, R: c.Repr(), Canonical: isCanonicalPerm}
+	for cc := range ch {
+		ckt_i += 1
+		for i, g := range cc {
+			C[i] = B[g]
 		}
-		close(pch)
-	}()
 
-	for pr := range pch {
-		// Check if this permutation is its own inverse
-		p := pr.P
+		// Build the circuit...
+		c := ckt.MakeCircuit(C)
+		// Enforce `n` wires in case terminal wires have no gates on them
+		// (in that case auto-sizing would shrink the circuit)
+		c.Wires = n
+
+		// ...and compute its canonical representation
+		c.Canonicalize()
+		if c.AdjacentId() {
+			// Skip circuits with a trivial identity = pair of adjacent
+			// identical gates
+			skip_id += 1
+			continue
+		}
+
+		// Compute the permutation, and its bit-shuffled canonicalization
+		isCanonicalPerm := false
+		var p []int
+		{
+			p_raw := c.Perm()
+			p = p_raw.Canonical()
+			isCanonicalPerm = slices.Equal(p_raw, p)
+		}
 
 		ip := invertPerm(p)
 		ownInv := slices.Equal(p, ip)
@@ -208,17 +190,19 @@ func main() {
 		// At this point: either we haven't yet seen this perm's inverse, or it
 		// is its own inverse. Add it to the record.
 		iph := PermString(ip)
-		if _, ok := Counter[iph]; !ok {
+		store, ok := Counter[iph]
+		if !ok {
 			Counter[iph] = NewPermStore(p)
+			store = Counter[iph]
 		}
 
-		if pr.Canonical {
+		if isCanonicalPerm {
 			// Only store circuits for which P = Canon(P). All other circuits
 			// can be easily generated from that set, and we save O(n!) space
-			Counter[iph].addCircuit(pr.R)
+			store.addCircuit(c.Repr())
 		} else {
 			// Not a canonical circuit, so just bump the counter
-			Counter[iph].increment()
+			store.increment()
 		}
 	}
 

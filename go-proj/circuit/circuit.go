@@ -224,6 +224,49 @@ func BaseGates(n int) [][]int {
 	return combin.Permutations(n, 3)
 }
 
+func BuildFrom(wires, gates int, store map[string]PersistPermStore) chan []int {
+	ch := make(chan []int)
+
+	B := BaseGates(wires)
+	rev := make(map[string]int)
+
+	for i, g := range B {
+		rev[fmt.Sprintf("%d%d%d", g[0], g[1], g[2])] = i
+	}
+
+	go func() {
+		for _, perm := range store {
+			s := make([]int, gates-1)
+
+			for _, c := range perm.Ckts {
+				// reconstruct prefix circuit
+				for i := 0; i < len(c)/3; i++ {
+					j := 3 * i
+					// fmt.Println(i, c[j:j+3])
+					s[i] = rev[c[j:j+3]]
+				}
+				// fmt.Println("Load", c, s)
+
+				// now create new ones
+				for g := 0; g < len(B); g++ {
+					// no duplicates
+					if g == s[len(s)-1] {
+						continue
+					}
+
+					q := append(s, g)
+					// fmt.Println(" ", q)
+					ch <- q
+				}
+			}
+		}
+
+		close(ch)
+	}()
+
+	return ch
+}
+
 func ParAllCircuits(wires, gates int) chan []int {
 	ch := make(chan []int)
 

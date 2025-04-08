@@ -1,9 +1,11 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	ckt "local-mixing/circuit"
 	"math"
+	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -22,9 +24,11 @@ func PermString(slice []int) string {
 }
 
 type PermStore struct {
-	Perm  []int
-	Ckts  sync.Map
-	Count int
+	Perm           []int
+	Ckts           sync.Map
+	Count          int
+	HaveAnyCircuit bool
+	HaveNonCanon   bool
 }
 
 func NewPermStore(s []int) *PermStore {
@@ -37,6 +41,12 @@ func NewPermStore(s []int) *PermStore {
 
 func (p *PermStore) addCircuit(repr string) {
 	(*p).Count += 1
+	(*p).Ckts.Store(repr, true)
+}
+
+func (p *PermStore) Replace(repr string) {
+	(*p).Count += 1
+	(*p).Ckts.Clear()
 	(*p).Ckts.Store(repr, true)
 }
 
@@ -53,56 +63,6 @@ func invertPerm(p []int) []int {
 	return inv
 }
 
-// func checkCircuit(s string) {
-// 	c := ckt.FromString(s)
-// 	fmt.Println(c)
-// 	p := c.Perm()
-// 	ph := PermString(p)
-// 	fmt.Println(p, ph)
-// 	ip := invertPerm(p)
-// 	iph := PermString(ip)
-// 	fmt.Println(ip, iph)
-// }
-
-func main2() {
-	// c := ckt.FromString("0 2 1; 1 2 0; 0 2 1; 1 2 0; 2 0 1; 0 1 2; 2 1 0; 2 0 1; 1 2 0; 2 0 1")
-	// fmt.Println(c)
-	// c.Canonicalize()
-	// fmt.Println(c)
-	// fmt.Println(c.Perm())
-	// fmt.Println(c.Perm().Canonical())
-	// fmt.Println(ckt.Permutation([]int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}).Canonical())
-	// ckt.CanonicalPerm([]int{0, 1, 3, 2, 4, 7, 6, 5})
-
-	c := ckt.FromStringCompressed("210230023130")
-	// c := ckt.FromStringCompressed("210230")
-	fmt.Println(c)
-	fmt.Println(c.Perm())
-	c.Canonicalize()
-	fmt.Println(c)
-	fmt.Println(c.Perm())
-
-	fmt.Println("=====")
-
-	c = ckt.FromStringCompressed("230210023130")
-	fmt.Println(c)
-	fmt.Println(c.Perm())
-	c.Canonicalize()
-	fmt.Println(c)
-	fmt.Println(c.Perm())
-
-	// fmt.Println("--\n")
-
-	// c = ckt.FromString("0 1 2;1 3 2;1 2 0;1 0 2;")
-	// // fmt.Println(c)
-	// c.Canonicalize()
-	// fmt.Println(c)
-
-	// 0 2 1;1 3 2;1 3 0;1 0 2;
-	// 0 2 1;1 3 0;1 3 2;1 0 2;
-	// 0 2 1;1 2 0;1 2 3;1 0 3;
-}
-
 type PR struct {
 	P         ckt.Permutation
 	R         string
@@ -111,11 +71,12 @@ type PR struct {
 
 var BaseGates []ckt.Gate
 
-var n_perms atomic.Uint64
-var ckt_check atomic.Uint64
-var skip_inv atomic.Uint64
-var ckt_i atomic.Uint64
-var skip_id atomic.Uint64
+var n_perms atomic.Int64
+var ckt_check atomic.Int64
+var skip_inv atomic.Int64
+var ckt_i atomic.Int64
+var skip_id atomic.Int64
+var own_inv_count atomic.Int64
 
 // Take as input a bunch of circuits and output a batch of permutations
 func buildCircuit(wires, gates, workers int, ckt_ch <-chan []int) <-chan []PR {
@@ -127,6 +88,7 @@ func buildCircuit(wires, gates, workers int, ckt_ch <-chan []int) <-chan []PR {
 
 	go func() {
 		defer close(perm_ch)
+		fmt.Println(workers, "perm workers launching")
 		for w := 0; w < workers; w++ {
 			wg.Add(1)
 
@@ -193,48 +155,96 @@ func buildCircuit(wires, gates, workers int, ckt_ch <-chan []int) <-chan []PR {
 }
 
 func main() {
-	n := 5
-	m := 5
-	ch := ckt.ParAllCircuits(n, m)
+	var n, m int
+	var load string
 
-	ckt.Init(n)
+	flag.IntVar(&n, "n", 0, "number of wires")
+	flag.IntVar(&m, "m", 0, "number of gates")
+	flag.StringVar(&load, "load", "", "load from pregenerated circuit database")
+	fresh := flag.Bool("new", false, "generate fresh circuit database")
+
+	flag.Parse()
+
+	if n < 3 || m < 1 {
+		fmt.Println("Invalid circuit size.")
+		os.Exit(1)
+	}
+
+	if (load != "") == (*fresh) {
+		fmt.Println("Specify one of --load or --new but not both")
+		os.Exit(1)
+	}
+
+	var total_ckt int64
 
 	bp := ckt.BaseGates(n)
 	BaseGates = make([]ckt.Gate, len(bp))
 	for i, b := range bp {
 		BaseGates[i] = ckt.MakeGate(b[0], b[1], b[2])
 	}
+
+	ckt.Init(n)
+
+	var ch chan []int
+
+	generateNew := load == ""
+
+	n_scratch := int64(len(BaseGates)) * int64(math.Pow(float64(len(BaseGates)-1), float64(m-1)))
+
+	if generateNew {
+		total_ckt = n_scratch
+		ch = ckt.ParAllCircuits(n, m)
+	} else {
+		fmt.Println("Loading existing database:", load)
+		store := ckt.Load(n, m, load)
+		// storage should be a struct and include n, m
+		ch = ckt.BuildFrom(n, m, store)
+
+		prev_count := 0
+		for _, c := range store {
+			prev_count += len(c.Ckts)
+		}
+
+		total_ckt = int64(prev_count) * int64(len(BaseGates))
+	}
+
 	var CircuitStore sync.Map
 	// c2p := make(map[string]string)
 
-	total_ckt := float64(len(BaseGates)) * math.Pow(float64(len(BaseGates)-1), float64(m-1))
-	fmt.Printf("n=%d, m=%d. circuits: %d\n", n, m, int64(total_ckt))
+	fmt.Printf("n=%d, m=%d. circuits: %d\n", n, m, total_ckt)
 
 	go func() {
 		start := time.Now()
 
 		var m runtime.MemStats
+		var last int64
 
 		for {
 			time.Sleep(1 * time.Second)
 			elapsed := time.Since(start)
-			if elapsed.Seconds() < 1 {
+			ci := ckt_i.Load()
+			if elapsed.Seconds() < 1 || ci < 10 || last == 0 {
+				last = ci
 				continue
 			}
 
 			runtime.ReadMemStats(&m)
 			mib_used := m.Alloc / 1024 / 1024
-			ci := ckt_i.Load()
-			kper_second := float64(ci/(uint64(elapsed.Seconds()))) / 1000
-			eta := int((total_ckt - float64(ci)) / kper_second / 1000)
-			fmt.Printf("@ %.1fM, %.1fk/s ETA: %d sec (mem: %d MiB)\n", float64(ci)/1000000, kper_second, eta, mib_used)
+
+			kper_second := float64(ci) / elapsed.Seconds() / 1000
+			eta := int(float64(total_ckt-ci) / kper_second / 1000)
+			now_kper := float64(ci-last) / 1000
+			fmt.Printf("@ %.1fM, now %.1fk/s, avg %.1fk/s ETA: %d sec (mem: %d MiB)\n", float64(ci)/1000000, now_kper, kper_second, eta, mib_used)
+			last = ci
 		}
 	}()
 
-	perm_ch := buildCircuit(n, m, runtime.NumCPU(), ch)
+	// -2 for MBP efficiency cores
+	// -1 for breathing room
+	perm_ch := buildCircuit(n, m, runtime.NumCPU()-3, ch)
 
 	WORKERS := 1
-	fmt.Println(WORKERS, "workers launching")
+	// fmt.Println(WORKERS, "workers launching")
 
 	var wg sync.WaitGroup
 
@@ -255,19 +265,23 @@ func main() {
 					p := pr.P
 
 					ip := invertPerm(p)
-					ownInv := slices.Equal(p, ip)
+					// ownInv := slices.Equal(p, ip)
 
-					if !ownInv {
-						// Generate the string repr
-						ph := PermString(p)
+					// if !ownInv {
+					// 	if generateNew {
+					// 		// Generate the string repr
+					// 		ph := PermString(p)
 
-						// Check if we've already seen this perm's (unique) inverse.
-						// If so, skip
-						if _, ok := CircuitStore.Load(ph); ok {
-							skip_inv.Add(1)
-							continue
-						}
-					}
+					// 		// Check if we've already seen this perm's (unique) inverse.
+					// 		// If so, skip
+					// 		if _, ok := CircuitStore.Load(ph); ok {
+					// 			skip_inv.Add(1)
+					// 			continue
+					// 		}
+					// 	}
+					// } else {
+					// 	own_inv_count.Add(1)
+					// }
 
 					// At this point: either we haven't yet seen this perm's inverse, or it
 					// is its own inverse. Add it to the record.
@@ -275,17 +289,36 @@ func main() {
 					_st, ok := CircuitStore.Load(iph)
 					var store *PermStore
 					if !ok {
-						store = NewPermStore(p)
+						store = NewPermStore(ip)
 						CircuitStore.Store(iph, store)
 						n_perms.Add(1)
 					} else {
 						store = _st.(*PermStore)
 					}
 
-					if pr.Canonical {
-						// Only store circuits for which P = Canon(P). All other circuits
-						// can be easily generated from that set, and we save O(n!) space
-						store.addCircuit(pr.R)
+					// Don't store all circuits. Only store canonical circuits,
+					// or the first circuit seen.
+					//
+					// Canonical circuits are those for which P = Canon(P). All
+					// other circuits can be easily generated from this set.
+					//
+					// However, if we are loading from an existing DB, we will
+					// only check a small fraction of the total circuits, and
+					// thus will not see a canonical circuit. So add the _first_
+					// circuit seen, along with any later canonical circuits.
+					//
+					// This saves O(n!) space.
+
+					if pr.Canonical || !store.HaveAnyCircuit {
+						if store.HaveNonCanon {
+							store.Replace(pr.R)
+							store.HaveNonCanon = false
+						} else {
+							store.addCircuit(pr.R)
+						}
+
+						store.HaveAnyCircuit = true
+						store.HaveNonCanon = !pr.Canonical
 					} else {
 						// Not a canonical circuit, so just bump the counter
 						store.increment()
@@ -299,22 +332,44 @@ func main() {
 
 	totalStore := 0
 	all := 0
+
+	saveMap := make(map[string]ckt.PersistPermStore)
+
 	CircuitStore.Range(func(k any, v any) bool {
 		pp, _ := v.(*PermStore)
+		s, _ := k.(string)
 		canonical := 0
-		pp.Ckts.Range(func(k any, v any) bool { canonical += 1; return true })
+
+		var ckts []string
+
+		pp.Ckts.Range(func(k any, v any) bool {
+			canonical += 1
+
+			repr, _ := k.(string)
+			ckts = append(ckts, repr)
+
+			return true
+		})
 
 		totalStore += canonical
 		all += pp.Count
 
-		// if len(pp.Ckts) <= 1 {
-		// 	return true
-		// }
+		ip := invertPerm(pp.Perm)
+
+		// not own inverse?
+		if !slices.Equal(ip, pp.Perm) {
+			// if inv_, ok := CircuitStore.Load(PermString(ip)); ok {
+			// 	inv, _ := inv_.(*PermStore)
+			// 	fmt.Println("WARNING: Perm and Inverse!", pp.Perm, inv.Perm)
+			// }
+		}
 
 		if canonical == 0 {
-			fmt.Println("ERROR! No canonical")
-			fmt.Println(" ", pp.Perm, pp.Count)
+			// fmt.Println("ERROR! No canonical")
+			// fmt.Println(" ", pp.Perm, pp.Count)
 		}
+
+		saveMap[s] = ckt.PersistPermStore{pp.Perm, ckts, pp.Count}
 
 		// fmt.Println("====")
 		// fmt.Printf("%v %v total; %v canon\n", pp.Perm, pp.Count, canonical)
@@ -328,18 +383,26 @@ func main() {
 
 	fmt.Println("===========================")
 	fmt.Printf("Total n=%d,m=%d circuits: %d\n", n, m, int(total_ckt))
+	if !generateNew {
+		fmt.Printf("  If gen from scratch: %d\n", n_scratch)
+	}
 
 	fmt.Println("  Received from circuit gen:", ckt_i.Load())
-	fmt.Println("  Skipped b/c trivial Id:", skip_id.Load())
+	fmt.Println("    Skipped b/c trivial Id:", skip_id.Load())
 	fmt.Println("  Circuits checked:", ckt_check.Load())
-	fmt.Println("  Skipped b/c saw inverse:", skip_inv.Load())
+	fmt.Println("    Skipped b/c saw inverse:", skip_inv.Load())
+	fmt.Println("    Circuits self inverse:", own_inv_count.Load())
 	fmt.Println("  Circuits stored:", totalStore)
 	fmt.Println("  Total count:", all)
+	fmt.Println("  Canonical perms:", n_perms.Load())
+
+	fmt.Println("===========================")
 
 	// fmt.Println(Counter[PermString([]int{7, 6, 5, 4, 3, 2, 1, 0})])
 
 	// fmt.Println(len(c2p))
-	fmt.Println("  Canonical perms:", n_perms.Load())
+
+	ckt.Save(n, m, saveMap)
 
 	// fmt.Println("NumCktPerPerm Occurences")
 	// for i, p := range CktCountCount {

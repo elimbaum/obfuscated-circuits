@@ -37,7 +37,7 @@ type PR struct {
 func buildCircuit(wires, gates, workers int, ckt_ch <-chan []int) <-chan []PR {
 	var wg sync.WaitGroup
 
-	const BATCH_SIZE = 1024
+	const BATCH_SIZE = 16384
 
 	perm_ch := make(chan []PR)
 
@@ -208,6 +208,9 @@ func main() {
 				//
 				// Maybe just get rid of the list of circuits. That saves some
 				// space.
+				//
+				// Alternate bloom filter... zero false positive. If it says we
+				// saw it, we saw it.
 				CircuitStore.Range(func(k any, v any) bool {
 					ps, _ := v.(*ckt.PermStore)
 					ps.Ckts.Clear()
@@ -228,10 +231,10 @@ func main() {
 
 	// -2 for MBP efficiency cores
 	// -1 for breathing room
-	perm_ch := buildCircuit(n, m, runtime.NumCPU()-3, ch)
+	perm_ch := buildCircuit(n, m, min(64, runtime.NumCPU()-3), ch)
 
-	WORKERS := 1
-	// fmt.Println(WORKERS, "workers launching")
+	WORKERS := 2
+	fmt.Println(WORKERS, "verification workers launching")
 
 	var wg sync.WaitGroup
 

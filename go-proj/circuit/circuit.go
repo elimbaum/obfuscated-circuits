@@ -297,6 +297,8 @@ func ParAllCircuits(wires, gates int) chan []int {
 
 		var wg sync.WaitGroup
 
+		fmt.Println(WORKERS, "build workers launching")
+
 		// Represent gates as `gates`-digit, base-`z` numbers
 		for w := 0; w < WORKERS; w++ {
 			wg.Add(1)

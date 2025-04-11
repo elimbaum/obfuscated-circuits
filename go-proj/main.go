@@ -11,63 +11,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pbnjay/memory"
 	"golang.org/x/exp/slices"
 )
 
-func PermString(slice []int) string {
-	// This will have perfect correctness up to 8 wires
-	b := make([]byte, len(slice))
-	for i, v := range slice {
-		b[i] = byte(v)
-	}
-	return string(b)
-}
-
-type PermStore struct {
-	Perm           []int
-	Ckts           sync.Map
-	Count          int
-	HaveAnyCircuit bool
-	HaveNonCanon   bool
-}
-
-func NewPermStore(s []int) *PermStore {
-	ps := new(PermStore)
-	(*ps).Perm = s
-	// (*ps).Ckts = make(map[string]bool)
-	(*ps).Count = 0
-	return ps
-}
-
-func (p *PermStore) addCircuit(repr string) {
-	(*p).Count += 1
-	(*p).Ckts.Store(repr, true)
-}
-
-func (p *PermStore) Replace(repr string) {
-	(*p).Count += 1
-	(*p).Ckts.Clear()
-	(*p).Ckts.Store(repr, true)
-}
-
-func (p *PermStore) increment() {
-	(*p).Count += 1
-}
-
-func invertPerm(p []int) []int {
-	inv := make([]int, len(p))
-
-	for i, q := range p {
-		inv[q] = i
-	}
-	return inv
-}
-
-type PR struct {
-	P         ckt.Permutation
-	R         string
-	Canonical bool
-}
+// Don't use more than this fraction of RAM.
+const MEMORY_FRACTION = 0.5
 
 var BaseGates []ckt.Gate
 
@@ -77,6 +26,12 @@ var skip_inv atomic.Int64
 var ckt_i atomic.Int64
 var skip_id atomic.Int64
 var own_inv_count atomic.Int64
+
+type PR struct {
+	P         ckt.Permutation
+	R         string
+	Canonical bool
+}
 
 // Take as input a bunch of circuits and output a batch of permutations
 func buildCircuit(wires, gates, workers int, ckt_ch <-chan []int) <-chan []PR {
@@ -165,6 +120,9 @@ func main() {
 
 	flag.Parse()
 
+	memThresh := uint64(float64(memory.TotalMemory())*MEMORY_FRACTION) / 1024 / 1024
+	fmt.Printf("== Memory Limit: %d MiB\n", memThresh)
+
 	if n < 3 || m < 1 {
 		fmt.Println("Invalid circuit size.")
 		os.Exit(1)
@@ -180,7 +138,7 @@ func main() {
 	bp := ckt.BaseGates(n)
 	BaseGates = make([]ckt.Gate, len(bp))
 	for i, b := range bp {
-		BaseGates[i] = ckt.MakeGate(b[0], b[1], b[2])
+		BaseGates[i] = ckt.MakeGate(b[0], b[1], b[2], i)
 	}
 
 	ckt.Init(n)
@@ -200,6 +158,9 @@ func main() {
 		// storage should be a struct and include n, m
 		ch = ckt.BuildFrom(n, m, store)
 
+		// Note: something about this count is off. Towards the end estimates
+		// get funky & it thinks its done
+		// or is it just other goroutines finishing?
 		prev_count := 0
 		for _, c := range store {
 			prev_count += len(c.Ckts)
@@ -208,11 +169,13 @@ func main() {
 		total_ckt = int64(prev_count) * int64(len(BaseGates))
 	}
 
+	// string -> PermStore struct
 	var CircuitStore sync.Map
 	// c2p := make(map[string]string)
 
 	fmt.Printf("n=%d, m=%d. circuits: %d\n", n, m, total_ckt)
 
+	// Live update / time estimate
 	go func() {
 		start := time.Now()
 
@@ -235,6 +198,30 @@ func main() {
 			eta := int(float64(total_ckt-ci) / kper_second / 1000)
 			now_kper := float64(ci-last) / 1000
 			fmt.Printf("@ %.1fM, now %.1fk/s, avg %.1fk/s ETA: %d sec (mem: %d MiB)\n", float64(ci)/1000000, now_kper, kper_second, eta, mib_used)
+			if mib_used > memThresh {
+				fmt.Println("  Over memory! Erasing circuits")
+				// TODO: if we get rid of the map, we won't have access to the
+				// list of already-generated perms. maybe somehow save a skeleton
+				// ... no circuits? or at least sentinel "had canonical" or not
+				// Bloom filter? false positives (might claim we already saw
+				// a perm, don't want that)
+				//
+				// Maybe just get rid of the list of circuits. That saves some
+				// space.
+				CircuitStore.Range(func(k any, v any) bool {
+					ps, _ := v.(*ckt.PermStore)
+					ps.Ckts.Clear()
+					return true
+				})
+
+				// fmt.Println("  ...running GC")
+				// runtime.GC()
+
+				fmt.Println("  ...done")
+
+				// CircuitStore.Clear()
+			}
+
 			last = ci
 		}
 	}()
@@ -264,36 +251,34 @@ func main() {
 					// Check if this permutation is its own inverse
 					p := pr.P
 
-					ip := invertPerm(p)
-					// ownInv := slices.Equal(p, ip)
+					ip := p.Invert()
+					ownInv := slices.Equal(p, ip)
 
-					// if !ownInv {
-					// 	if generateNew {
-					// 		// Generate the string repr
-					// 		ph := PermString(p)
+					if !ownInv {
+						// Generate the string repr
+						ph := p.Repr()
 
-					// 		// Check if we've already seen this perm's (unique) inverse.
-					// 		// If so, skip
-					// 		if _, ok := CircuitStore.Load(ph); ok {
-					// 			skip_inv.Add(1)
-					// 			continue
-					// 		}
-					// 	}
-					// } else {
-					// 	own_inv_count.Add(1)
-					// }
+						// Check if we've already seen this perm's (unique) inverse.
+						// If so, skip
+						if _, ok := CircuitStore.Load(ph); ok {
+							skip_inv.Add(1)
+							continue
+						}
+					} else {
+						own_inv_count.Add(1)
+					}
 
 					// At this point: either we haven't yet seen this perm's inverse, or it
 					// is its own inverse. Add it to the record.
-					iph := PermString(ip)
+					iph := ip.Repr()
 					_st, ok := CircuitStore.Load(iph)
-					var store *PermStore
+					var store *ckt.PermStore
 					if !ok {
-						store = NewPermStore(ip)
+						store = ckt.NewPermStore(ip)
 						CircuitStore.Store(iph, store)
 						n_perms.Add(1)
 					} else {
-						store = _st.(*PermStore)
+						store = _st.(*ckt.PermStore)
 					}
 
 					// Don't store all circuits. Only store canonical circuits,
@@ -304,8 +289,10 @@ func main() {
 					//
 					// However, if we are loading from an existing DB, we will
 					// only check a small fraction of the total circuits, and
-					// thus will not see a canonical circuit. So add the _first_
-					// circuit seen, along with any later canonical circuits.
+					// thus will probably not see a canonical circuit. So add
+					// the _first_ circuit seen, along with any later canonical
+					// circuits. If we've already added a non-canonical circuit,
+					// replace it with the canonical one.
 					//
 					// This saves O(n!) space.
 
@@ -314,14 +301,14 @@ func main() {
 							store.Replace(pr.R)
 							store.HaveNonCanon = false
 						} else {
-							store.addCircuit(pr.R)
+							store.AddCircuit(pr.R)
 						}
 
 						store.HaveAnyCircuit = true
 						store.HaveNonCanon = !pr.Canonical
 					} else {
 						// Not a canonical circuit, so just bump the counter
-						store.increment()
+						store.Increment()
 					}
 				}
 			}
@@ -336,7 +323,7 @@ func main() {
 	saveMap := make(map[string]ckt.PersistPermStore)
 
 	CircuitStore.Range(func(k any, v any) bool {
-		pp, _ := v.(*PermStore)
+		pp, _ := v.(*ckt.PermStore)
 		s, _ := k.(string)
 		canonical := 0
 
@@ -354,7 +341,7 @@ func main() {
 		totalStore += canonical
 		all += pp.Count
 
-		ip := invertPerm(pp.Perm)
+		ip := pp.Perm.Invert()
 
 		// not own inverse?
 		if !slices.Equal(ip, pp.Perm) {

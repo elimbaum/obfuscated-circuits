@@ -14,10 +14,18 @@ type Gate struct {
 	Active int
 	Ctrl1  int
 	Ctrl2  int
+	id     int // the gate's identity in the gate library
 }
 
-func MakeGate(a, c1, c2 int) Gate {
-	return Gate{Active: a, Ctrl1: c1, Ctrl2: c2}
+func (g Gate) Id() int {
+	return g.id
+}
+
+func MakeGate(a, c1, c2, id int) Gate {
+	if id > 255 {
+		panic(fmt.Sprintf("id %d too large!", id))
+	}
+	return Gate{Active: a, Ctrl1: c1, Ctrl2: c2, id: id}
 }
 
 func (g Gate) top() int {
@@ -39,7 +47,8 @@ func (g Gate) eval(input int) int {
 
 func (g Gate) Repr() string {
 	// return fmt.Sprintf("%d %d %d", g.Active, g.Ctrl1, g.Ctrl2)
-	return fmt.Sprintf("%d%d%d", g.Active, g.Ctrl1, g.Ctrl2)
+	return string(byte(g.id))
+	// return fmt.Sprintf("%d%d%d", g.Active, g.Ctrl1, g.Ctrl2)
 }
 
 func (g Gate) Collides(h Gate) bool {
@@ -125,8 +134,6 @@ func (c Circuit) eval(state int) int {
 
 	return state
 }
-
-type Permutation []int
 
 func (c Circuit) Perm() Permutation {
 	output := make(Permutation, 1<<c.Wires)
@@ -254,9 +261,13 @@ func BuildFrom(wires, gates int, store map[string]PersistPermStore) chan []int {
 						continue
 					}
 
-					q := append(s, g)
-					// fmt.Println(" ", q)
-					ch <- q
+					q1 := append(s, g)
+					ch <- q1
+
+					q2 := append([]int{g}, s...)
+					ch <- q2
+
+					// TODO: also send reverse circuit here?
 				}
 			}
 		}
@@ -267,6 +278,7 @@ func BuildFrom(wires, gates int, store map[string]PersistPermStore) chan []int {
 	return ch
 }
 
+// TODO catalan numbers/dyck trees?
 func ParAllCircuits(wires, gates int) chan []int {
 	ch := make(chan []int)
 
@@ -320,62 +332,4 @@ func ParAllCircuits(wires, gates int) chan []int {
 	}()
 
 	return ch
-}
-
-var bit_shuf [][]int
-
-func Init(n int) {
-	bit_shuf = combin.Permutations(n, n)[1:]
-}
-
-// Find the canonical bit-shuffling of p
-func (p Permutation) Canonical() []int {
-	n := len(p)
-
-	// store minimal bit permutation in here
-	// to start, load with the current perm (unshuffled)
-	m := make([]int, n)
-	copy(m, p)
-	// temporary to reconstruct shuffled bits
-	t := make([]int, n)
-	// temporary to reconstruct shuffled indices
-	idx := make([]int, n)
-	// temporary to shuffle t into, according to idx
-	s := make([]int, n)
-
-	// skip the first one, because that is the identity
-	for _, r := range bit_shuf {
-		for src, dst := range r {
-			// map bit `src` to bit `dst`
-			for i := range p {
-				t[i] |= ((p[i] >> src) & 1) << dst
-				idx[i] |= ((i >> src) & 1) << dst
-			}
-		}
-
-		for i := range t {
-			s[idx[i]] = t[i]
-		}
-
-		// lexicographical sort
-		for i := range m {
-			if s[i] == m[i] {
-				continue
-			}
-
-			if s[i] < m[i] {
-				copy(m, s)
-			}
-
-			// if s[i] != m[i], sort is over, either way
-			break
-		}
-
-		// clear slices out for the next round
-		clear(t)
-		clear(idx)
-		// clear(s)
-	}
-
-	return m
 }

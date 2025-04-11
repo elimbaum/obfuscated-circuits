@@ -166,7 +166,7 @@ func main() {
 			prev_count += len(c.Ckts)
 		}
 
-		total_ckt = int64(prev_count) * int64(len(BaseGates))
+		total_ckt = 2 * int64(prev_count) * int64(len(BaseGates))
 	}
 
 	// string -> PermStore struct

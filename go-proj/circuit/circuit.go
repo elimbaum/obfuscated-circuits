@@ -247,10 +247,9 @@ func BuildFrom(wires, gates int, store map[string]PersistPermStore) chan []int {
 
 			for _, c := range perm.Ckts {
 				// reconstruct prefix circuit
-				for i := 0; i < len(c)/3; i++ {
-					j := 3 * i
+				for i, g := range c {
 					// fmt.Println(i, c[j:j+3])
-					s[i] = rev[c[j:j+3]]
+					s[i] = int(g)
 				}
 				// fmt.Println("Load", c, s)
 

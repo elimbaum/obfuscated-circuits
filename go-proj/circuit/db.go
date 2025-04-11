@@ -19,6 +19,7 @@ type Persist struct {
 	Store map[string]PersistPermStore
 }
 
+// TODO: compression?
 func Save(n int, m int, store map[string]PersistPermStore) {
 	f, _ := os.Create(fmt.Sprintf("db/n%dm%d.gob", n, m))
 	defer f.Close()

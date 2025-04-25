@@ -33,6 +33,7 @@ import copy
 from collections import defaultdict
 
 s_ = randint(0, 1e6)
+# s_ = 229873
 print("SEED:", s_)
 seed(s_)
 
@@ -153,6 +154,20 @@ class CandSet:
     def isect(self, other):
         for k, v in self.map.items():
             v &= other.map[k]
+
+    def enforce(self, x, y):
+        # enforce x -> y
+        x_zeros = set(j for j in range(n) if (x & (1 << j)) == 0)
+        x_ones = set(j for j in range(n) if (x & (1 << j)) != 0)
+        y_zeros = set(j for j in range(n) if (y & (1 << j)) == 0)
+        y_ones = set(j for j in range(n) if (y & (1 << j)) != 0)
+
+        for k, v in self.map.items():
+            if k in x_zeros:
+                v &= y_zeros
+
+            if k in x_ones:
+                v &= y_ones
 
     # does the mapping allow x -> y?
     def is_consistent(self, x, y):
@@ -277,7 +292,7 @@ def canonicalize(perm):
                         continue
                     print(f"     π({x}) = {perm[x]} b{perm[x]:0{n}b}")
 
-            passed = None
+            passed = set()
             best = None
             best_x = None
             for x in p:
@@ -297,25 +312,34 @@ def canonicalize(perm):
                 if not is_con:
                     continue
 
-                if best is None or val <= best:
+                m.enforce(x, w)
+
+                if best is None or val < best:
                     if best is not None:
-                        print(f"    {y} -> {val} <= {best}")
+                        print(f"    {y} -> {val} < {best}")
                     else:
                         print(f"    {y} -> {val}")
                     best = val
                     best_x = x
+                    passed = {m}
+                elif val == best:
+                    print(f"    {y} -> {val} == {best}, adding")
+                    passed.add(m)
                 else:
-                    print(f"    {val} > {best}")
+                    print(f"    {y} -> {val} > {best}, skip")
                     continue
 
-                passed = m
-
-            if passed is None:
+            if len(passed) == 0:
                 # no valid candidate passed checks; skip
                 continue
 
-            print(f"  Updating candidate map: π({best_x})")
-            cand = passed
+            # if multiple matches, no unique lex assignment. move on to next
+            # word
+            if len(passed) > 1:
+                continue
+
+            print(f"  Updating candidate map: π({best_x}) -> π'({w})")
+            cand = passed.pop()
 
             print("---")
 
@@ -335,7 +359,7 @@ def canonicalize(perm):
     return [cand.map[i].pop() for i in range(n)]
 
 
-n = 6
+n = 4
 R = np.arange(n)
 N = 2**n
 bincomp = 1 << R

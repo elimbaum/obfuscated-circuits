@@ -255,6 +255,7 @@ def min_consistent(x, cand):
 
     return out, c3
 
+end_w = None
 
 def canonicalize(perm):
     n = (len(perm) - 1).bit_length()
@@ -270,13 +271,12 @@ def canonicalize(perm):
         print(f"==== Index set: {sl}")
         print(f"===========================")
 
-        if 3 in sl:
-            print("Skip multibit candidates. Aborting.")
-            os.abort()
-            break
-
         # for each perm index in this weight class
         for w in sl:
+            if n > 3 and (w.bit_count() == 2 or w.bit_count() == (n - 2)):
+                print("Skip multibit candidates. Aborting.")
+                os.abort()
+
             # what are the valid preimages of w?
             print("Candidate mappings:")
             print(cand)
@@ -336,6 +336,8 @@ def canonicalize(perm):
             # if multiple matches, no unique lex assignment. move on to next
             # word
             if len(passed) > 1:
+                for p in passed:
+                    print(f"p={p}")
                 continue
 
             print(f"  Updating candidate map: π({best_x}) -> π'({w})")
@@ -355,6 +357,9 @@ def canonicalize(perm):
     # if we made it outside the loop without canonicalizing, abort
     if not cand.complete():
         os.abort()
+
+    global end_w
+    end_w = w
 
     return [cand.map[i].pop() for i in range(n)]
 
@@ -379,20 +384,28 @@ test = True
 
 if test:
     good = 0
-    for _ in range(32):
-        shuffle(q)
-        p2 = apply_shuffle(perm, q)
+    max_w = []
+    while True:
+        shuffle(perm)
+        q = canonicalize(perm)
+        pp = apply_shuffle(perm, q)
+        max_w.append(end_w)
+        # for _ in range(8):
+        #     shuffle(q)
+        #     p2 = apply_shuffle(perm, q)
 
-        if np.array_equal(perm, p2):
-            continue
+        #     if np.array_equal(perm, p2):
+        #         continue
 
-        q2 = canonicalize(p2)
-        pp2 = apply_shuffle(p2, q2)
+        #     q2 = canonicalize(p2)
+        #     pp2 = apply_shuffle(p2, q2)
 
-        good += 1
+        #     good += 1
 
-        print(pp)
-        print(pp2)
-        assert np.array_equal(pp, pp2)
+        #     print(pp)
+        #     print(pp2)
+        #     assert np.array_equal(pp, pp2)
+
+        print(f"{max_w=}")
 
     print(f"{good=}")

@@ -30,7 +30,7 @@ import pprint
 from functools import reduce
 import operator
 import copy
-from collections import defaultdict
+from collections import defaultdict, Counter
 
 s_ = randint(0, 1e6)
 # s_ = 229873
@@ -155,6 +155,10 @@ class CandSet:
         for k, v in self.map.items():
             v &= other.map[k]
 
+    def union(self, other):
+        for k, v in self.map.items():
+            v |= other.map[k]
+
     def enforce(self, x, y):
         # enforce x -> y
         x_zeros = set(j for j in range(n) if (x & (1 << j)) == 0)
@@ -168,6 +172,22 @@ class CandSet:
 
             if k in x_ones:
                 v &= y_ones
+
+    def output(self):
+        if self.complete():
+            return [self.map[i].pop() for i in range(n)]
+    
+        # incomplete. any assignment is valid; choose one at random
+        # TODO: is this ok? only appears to happen with n=3
+        print("Incomplete output.")
+        L = []
+        for i in range(n):
+            p = next(iter(self.map[i]))
+            L.append(p)
+            self.fixmap(i, p)
+            print(self.map)
+
+        return L
 
     # does the mapping allow x -> y?
     def is_consistent(self, x, y):
@@ -334,14 +354,24 @@ def canonicalize(perm):
                 continue
 
             # if multiple matches, no unique lex assignment. move on to next
-            # word
+            # word... or do union?
             if len(passed) > 1:
-                for p in passed:
-                    print(f"p={p}")
+                # for p in passed:
+                #     print(f"p={p}")
+
+                print("Warning: ambiguous!")
                 continue
 
-            print(f"  Updating candidate map: π({best_x}) -> π'({w})")
-            cand = passed.pop()
+                # pick a random one. may not be right.
+                # TODO
+                # cand = passed.pop()
+
+                # for p in passed:
+                #     cand.union(p)
+                # print("union=", cand)
+            else:
+                print(f"  Updating candidate map: π({best_x}) -> π'({w})")
+                cand = passed.pop()
 
             print("---")
 
@@ -356,15 +386,17 @@ def canonicalize(perm):
 
     # if we made it outside the loop without canonicalizing, abort
     if not cand.complete():
-        os.abort()
+        print("Incomplete!")
+        
+        # os.abort()
 
     global end_w
     end_w = w
 
-    return [cand.map[i].pop() for i in range(n)]
+    return cand.output()
 
 
-n = 4
+n = 5
 R = np.arange(n)
 N = 2**n
 bincomp = 1 << R
@@ -384,27 +416,32 @@ test = True
 
 if test:
     good = 0
-    max_w = []
+    max_w = Counter()
     while True:
         shuffle(perm)
         q = canonicalize(perm)
+
+        print(q)
+        assert set(q) == set(range(n))
+        assert set(pp) == set(range(N))
+
         pp = apply_shuffle(perm, q)
-        max_w.append(end_w)
-        # for _ in range(8):
-        #     shuffle(q)
-        #     p2 = apply_shuffle(perm, q)
+        max_w[end_w] += 1
+        for _ in range(8):
+            shuffle(q)
+            p2 = apply_shuffle(perm, q)
 
-        #     if np.array_equal(perm, p2):
-        #         continue
+            if np.array_equal(perm, p2):
+                continue
 
-        #     q2 = canonicalize(p2)
-        #     pp2 = apply_shuffle(p2, q2)
+            q2 = canonicalize(p2)
+            pp2 = apply_shuffle(p2, q2)
 
-        #     good += 1
+            good += 1
 
-        #     print(pp)
-        #     print(pp2)
-        #     assert np.array_equal(pp, pp2)
+            print(pp)
+            print(pp2)
+            assert np.array_equal(pp, pp2)
 
         print(f"{max_w=}")
 

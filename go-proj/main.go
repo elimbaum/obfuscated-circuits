@@ -198,6 +198,7 @@ func main() {
 			eta := int(float64(total_ckt-ci) / kper_second / 1000)
 			now_kper := float64(ci-last) / 1000
 			fmt.Printf("@ %.1fM, now %.1fk/s, avg %.1fk/s ETA: %d sec (mem: %d MiB)\n", float64(ci)/1000000, now_kper, kper_second, eta, mib_used)
+			fmt.Println("  ", ckt.PermComputed.Swap(0))
 			if mib_used > memThresh {
 				fmt.Println("  Over memory! Erasing circuits")
 				// TODO: if we get rid of the map, we won't have access to the
@@ -213,7 +214,7 @@ func main() {
 				// saw it, we saw it.
 				CircuitStore.Range(func(k any, v any) bool {
 					ps, _ := v.(*ckt.PermStore)
-					ps.Ckts.Clear()
+					ps.Ckts = nil
 					return true
 				})
 
@@ -253,17 +254,21 @@ func main() {
 					}
 					// Check if this permutation is its own inverse
 					p := pr.P
+					// Generate the string repr
+					ph := p.Repr()
 
 					ip := p.Invert()
 					ownInv := slices.Equal(p, ip)
 
 					if !ownInv {
-						// Generate the string repr
-						ph := p.Repr()
-
+						iph := ip.Repr()
 						// Check if we've already seen this perm's (unique) inverse.
 						// If so, skip
-						if _, ok := CircuitStore.Load(ph); ok {
+						// There's a logical race condition here: we might check
+						// P and P^-1 at the same time, and neither will
+						// register the other (because the addition happens a
+						// lines below). Maybe that's ok.
+						if _, ok := CircuitStore.Load(iph); ok {
 							skip_inv.Add(1)
 							continue
 						}
@@ -273,16 +278,20 @@ func main() {
 
 					// At this point: either we haven't yet seen this perm's inverse, or it
 					// is its own inverse. Add it to the record.
-					iph := ip.Repr()
-					_st, ok := CircuitStore.Load(iph)
-					var store *ckt.PermStore
-					if !ok {
-						store = ckt.NewPermStore(ip)
-						CircuitStore.Store(iph, store)
+
+					// What's the locking space here... if not in the map!
+
+					// Create ane empty permStore
+					var new_store = ckt.NewPermStore(p)
+					_st, new := CircuitStore.LoadOrStore(ph, new_store)
+
+					if new {
 						n_perms.Add(1)
-					} else {
-						store = _st.(*ckt.PermStore)
 					}
+					// Either way, `_st` return from `LoadOrStore` is what we
+					// want
+					store := _st.(*ckt.PermStore)
+					store.Lock()
 
 					// Don't store all circuits. Only store canonical circuits,
 					// or the first circuit seen.
@@ -299,20 +308,23 @@ func main() {
 					//
 					// This saves O(n!) space.
 
-					if pr.Canonical || !store.HaveAnyCircuit {
-						if store.HaveNonCanon {
-							store.Replace(pr.R)
-							store.HaveNonCanon = false
-						} else {
+					if pr.Canonical {
+						if store.ContainsCanonical {
 							store.AddCircuit(pr.R)
+						} else {
+							store.Replace(pr.R)
 						}
-
-						store.HaveAnyCircuit = true
-						store.HaveNonCanon = !pr.Canonical
+						store.ContainsCanonical = true
+					} else if !store.ContainsAnyCircuit {
+						store.AddCircuit(pr.R)
 					} else {
-						// Not a canonical circuit, so just bump the counter
+						// not canonical, and we already contain a circuit. just
+						// increment.
 						store.Increment()
 					}
+					store.ContainsAnyCircuit = true
+
+					store.Unlock()
 				}
 			}
 		}()
@@ -325,22 +337,14 @@ func main() {
 
 	saveMap := make(map[string]ckt.PersistPermStore)
 
+	np := 0
+
 	CircuitStore.Range(func(k any, v any) bool {
 		pp, _ := v.(*ckt.PermStore)
 		s, _ := k.(string)
-		canonical := 0
+		canonical := len(pp.Ckts)
 
-		var ckts []string
-
-		pp.Ckts.Range(func(k any, v any) bool {
-			canonical += 1
-
-			repr, _ := k.(string)
-			ckts = append(ckts, repr)
-
-			return true
-		})
-
+		np += 1
 		totalStore += canonical
 		all += pp.Count
 
@@ -348,10 +352,10 @@ func main() {
 
 		// not own inverse?
 		if !slices.Equal(ip, pp.Perm) {
-			// if inv_, ok := CircuitStore.Load(PermString(ip)); ok {
-			// 	inv, _ := inv_.(*PermStore)
-			// 	fmt.Println("WARNING: Perm and Inverse!", pp.Perm, inv.Perm)
-			// }
+			if inv_, ok := CircuitStore.Load(ip.String()); ok {
+				inv, _ := inv_.(*ckt.PermStore)
+				fmt.Println("WARNING: Perm and Inverse!", pp.Perm, inv.Perm)
+			}
 		}
 
 		if canonical == 0 {
@@ -359,15 +363,15 @@ func main() {
 			// fmt.Println(" ", pp.Perm, pp.Count)
 		}
 
-		saveMap[s] = ckt.PersistPermStore{pp.Perm, ckts, pp.Count}
+		saveMap[s] = ckt.PersistPermStore{pp.Perm, pp.Ckts, pp.Count}
 
-		// fmt.Println("====")
 		// fmt.Printf("%v %v total; %v canon\n", pp.Perm, pp.Count, canonical)
 
-		// for c, _ := range pp.Ckts {
-		// fmt.Println(c)
-		// fmt.Println(ckt.FromStringCompressed(c))
-		// }
+		fmt.Println("====", pp.Perm)
+		for _, c := range pp.Ckts {
+			fmt.Println(ckt.FromStringCompressed(n, c))
+		}
+
 		return true
 	})
 
@@ -384,7 +388,7 @@ func main() {
 	fmt.Println("    Circuits self inverse:", own_inv_count.Load())
 	fmt.Println("  Circuits stored:", totalStore)
 	fmt.Println("  Total count:", all)
-	fmt.Println("  Canonical perms:", n_perms.Load())
+	fmt.Println("  Canonical perms:", np)
 
 	fmt.Println("===========================")
 

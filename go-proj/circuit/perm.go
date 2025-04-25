@@ -3,36 +3,36 @@ package circuit
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"golang.org/x/exp/slices"
 	"gonum.org/v1/gonum/stat/combin"
 )
 
+// Lock must be held before performing any operations.
 type PermStore struct {
-	Perm           Permutation
-	Ckts           sync.Map
-	Count          int
-	HaveAnyCircuit bool
-	HaveNonCanon   bool
+	Perm Permutation
+	sync.Mutex
+	Ckts               []string
+	Count              int
+	ContainsAnyCircuit bool
+	ContainsCanonical  bool
 }
 
 func NewPermStore(s Permutation) *PermStore {
 	ps := new(PermStore)
 	(*ps).Perm = s
-	// (*ps).Ckts = make(map[string]bool)
-	(*ps).Count = 0
 	return ps
 }
 
 func (p *PermStore) AddCircuit(repr string) {
 	(*p).Count += 1
-	(*p).Ckts.Store(repr, true)
+	(*p).Ckts = append((*p).Ckts, repr)
 }
 
 func (p *PermStore) Replace(repr string) {
 	(*p).Count += 1
-	(*p).Ckts.Clear()
-	(*p).Ckts.Store(repr, true)
+	(*p).Ckts = []string{repr}
 }
 
 func (p *PermStore) Increment() {
@@ -77,10 +77,13 @@ func Init(n int) {
 
 // save time by memoizing canonical perms
 // note: uses a lot of memory
+// Really, this should be a cache, and then we should somehow traverse all
+// circuits in a permutation-friendly way...
+// If we can figure out popularity of permutation (unlikely?) don't store
+// unpopular ones.
 var memoized_canonical sync.Map
 
-var MemoizedStored int
-var Memoized int
+var PermComputed atomic.Int64
 
 // Find the canonical bit-shuffling of p
 // TODO: only consider active wires
@@ -93,6 +96,10 @@ func (p Permutation) Canonical() Permutation {
 	}
 
 	ps := p.String()
+	// By memoize perms, we save about 25% of the work
+	// However, it's possible we could structure this as a cache, and somehow
+	// iterate through circuits in a "cache friendly" order. This map can grow
+	// to be quite large (and probably becomes the dominant memory user)
 	if c, ok := memoized_canonical.Load(ps); ok {
 		if c == nil {
 			return p
@@ -100,6 +107,8 @@ func (p Permutation) Canonical() Permutation {
 		cp := c.(Permutation)
 		return cp
 	}
+
+	PermComputed.Add(1)
 
 	// store minimal bit permutation in here
 	// to start, load with the current perm (unshuffled)
@@ -158,10 +167,7 @@ func (p Permutation) Canonical() Permutation {
 		memoized_canonical.Store(ps, nil)
 	} else {
 		memoized_canonical.Store(ps, pm)
-		MemoizedStored += 1
 	}
-
-	Memoized += 1
 
 	return pm
 }

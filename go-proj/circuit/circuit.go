@@ -170,16 +170,16 @@ func FromString(s string) Circuit {
 	return MakeCircuit(gates)
 }
 
-func FromStringCompressed(s string) Circuit {
+func FromStringCompressed(n int, s string) Circuit {
+	B := BaseGates(n)
+
 	var gates []Gate
-	for i := 0; i+2 < len(s); i += 3 {
-
-		a := int(s[i] - '0')
-		c1 := int(s[i+1] - '0')
-		c2 := int(s[i+2] - '0')
-
-		gates = append(gates, Gate{Active: a, Ctrl1: c1, Ctrl2: c2})
+	for _, g := range s {
+		gi := int(g)
+		pins := B[gi]
+		gates = append(gates, Gate{pins[0], pins[1], pins[2], gi})
 	}
+
 	return MakeCircuit(gates)
 }
 
@@ -235,11 +235,6 @@ func BuildFrom(wires, gates int, store map[string]PersistPermStore) chan []int {
 	ch := make(chan []int)
 
 	B := BaseGates(wires)
-	rev := make(map[string]int)
-
-	for i, g := range B {
-		rev[fmt.Sprintf("%d%d%d", g[0], g[1], g[2])] = i
-	}
 
 	go func() {
 		for _, perm := range store {

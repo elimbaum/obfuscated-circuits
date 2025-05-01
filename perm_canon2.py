@@ -33,12 +33,8 @@ import operator
 import copy
 from collections import defaultdict, Counter
 
-s_ = randint(0, 1e6)
-s_ = 169677
-print("SEED:", s_)
-seed(s_)
-
-def strings_of_weight(w):
+def strings_of_weight(w, n):
+    N = 1 << n
     # due to Bill Gosper?
     def next(x):
         c = x & -x
@@ -57,16 +53,16 @@ def strings_of_weight(w):
         alpha = next(alpha)
 
 
-def index_sets():
+def index_sets(n):
     for s in range(n // 2 + 1):
         # "light" string (more 0s than 1s)
-        yield strings_of_weight(s)
+        yield strings_of_weight(s, n)
 
         if 2 * s == n:
             continue
 
         # "heavy" string (bitwise complement, more 1s than 0s)
-        yield strings_of_weight(n - s)
+        yield strings_of_weight(n - s, n)
 
 
 def apply_shuffle(p, sh):
@@ -98,17 +94,20 @@ class CandSet:
         # for which equal-weight s does there still exist a valid candidate
         # mapping from s to w?
         p = set()
-        for s in strings_of_weight(w.bit_count()):
+        for s in strings_of_weight(w.bit_count(), self.n):
             # source bits map to target wbits
             sbits = [i for i in range(self.n) if (s & (1 << i))]
 
             # may not be totally correct, just a first pass
             # however might be correct if all distinct mappings are disjoint...
             # tbd
+            # TODO: this is the issue?
             bit_possib = reduce(operator.or_, (self.map[_b] for _b in sbits), set())
 
             if wbits <= bit_possib:
                 p.add(s)
+
+        # print(f"{p=}")
 
         return p
 
@@ -117,7 +116,7 @@ class CandSet:
 
     def normalize(self):
         changes = False
-        for i in range(n):
+        for i in range(self.n):
             c = [k for k, v in self.map.items() if i in v]
             # if my only assignment, no one else can have it
             if len(c) == 1:
@@ -162,10 +161,10 @@ class CandSet:
 
     def enforce(self, x, y):
         # enforce x -> y
-        x_zeros = set(j for j in range(n) if (x & (1 << j)) == 0)
-        x_ones = set(j for j in range(n) if (x & (1 << j)) != 0)
-        y_zeros = set(j for j in range(n) if (y & (1 << j)) == 0)
-        y_ones = set(j for j in range(n) if (y & (1 << j)) != 0)
+        x_zeros = set(j for j in range(self.n) if (x & (1 << j)) == 0)
+        x_ones = set(j for j in range(self.n) if (x & (1 << j)) != 0)
+        y_zeros = set(j for j in range(self.n) if (y & (1 << j)) == 0)
+        y_ones = set(j for j in range(self.n) if (y & (1 << j)) != 0)
 
         for k, v in self.map.items():
             if k in x_zeros:
@@ -176,13 +175,13 @@ class CandSet:
 
     def output(self):
         if self.complete():
-            return [self.map[i].pop() for i in range(n)]
+            return [self.map[i].pop() for i in range(self.n)]
     
         # incomplete. any assignment is valid; choose one at random
         # TODO: is this ok? only appears to happen with n=3
         print("Incomplete output.")
         L = []
-        for i in range(n):
+        for i in range(self.n):
             p = min(self.map[i])
             L.append(p)
             self.fixmap(i, p)
@@ -193,10 +192,10 @@ class CandSet:
     # does the mapping allow x -> y?
     def is_consistent(self, x, y):
         # print(f"Check consistent: {x} -> {y}")
-        x_zeros = set(j for j in range(n) if (x & (1 << j)) == 0)
-        x_ones = set(j for j in range(n) if (x & (1 << j)) != 0)
-        y_zeros = set(j for j in range(n) if (y & (1 << j)) == 0)
-        y_ones = set(j for j in range(n) if (y & (1 << j)) != 0)
+        x_zeros = set(j for j in range(self.n) if (x & (1 << j)) == 0)
+        x_ones = set(j for j in range(self.n) if (x & (1 << j)) != 0)
+        y_zeros = set(j for j in range(self.n) if (y & (1 << j)) == 0)
+        y_ones = set(j for j in range(self.n) if (y & (1 << j)) != 0)
 
         # print(f"{x_zeros=}, {y_zeros=}")
         # print(f"{x_ones=}, {y_ones=}")
@@ -236,9 +235,7 @@ class CandSet:
 
 # maps INPUT BITS to POSSIBLE OUTPUT BITS
 # we terminate when each row (input bit) has a single non-null output
-
-
-def min_consistent(x, cand):
+def min_consistent(x, cand, n):
     # zeros in the input
     zlist = set(j for j in range(n) if (x & (1 << j)) == 0)
     # ones
@@ -255,6 +252,7 @@ def min_consistent(x, cand):
             # print(f"{i=} -> {i_from=}")
             # print(c2)
             return None, None
+            # continue
 
         # are any of them zeros?
         cand_z = i_from & zlist
@@ -302,7 +300,6 @@ def min_consistent(x, cand):
 end_w = None
 
 def canonicalize(perm, do_print=True):
-
     prnt = print
     if not do_print:
         prnt = lambda x, *args: 0
@@ -314,7 +311,7 @@ def canonicalize(perm, do_print=True):
 
     steps = 0
 
-    for s in index_sets():
+    for s in index_sets(n):
         # list of perm indices with a given weight, according to our defined order
         sl = list(s)
 
@@ -325,14 +322,12 @@ def canonicalize(perm, do_print=True):
         # for each perm index in this weight class
         for w in sl:
             steps += 1
-            if n > 3 and (w.bit_count() == 2 or w.bit_count() == (n - 2)):
-                prnt("Skip multibit candidates. Aborting.")
-                # os.abort()
 
             # what are the valid preimages of w?
             prnt("Candidate mappings:")
             prnt(cand)
 
+            # may be slightly overinclusive
             p = cand.preimages(w)
 
             prnt(f"\n--- π({w}) = {perm[w]} b{perm[w]:0{n}b}")
@@ -348,15 +343,20 @@ def canonicalize(perm, do_print=True):
             best = None
             best_x = None
             identity = False
+            one_valid = False
             for x in p:
                 y = perm[x]
                 cand2 = copy.deepcopy(cand)
+                if not cand2.is_consistent(x, w):
+                    prnt(f"{x} -> {w} inconsistent with {cand2}")
+                    continue
+
                 cand2.enforce(x, w)
-                cand2.normalize()
-                val, m = min_consistent(y, cand2)
+                prnt(cand2)
+                val, m = min_consistent(y, cand2, n)
 
                 if val == None:
-                    continue
+                    os.abort()
 
                 # print(f"p[{x}] = {y}. Consistency map for min={val}:")
                 # print(m)
@@ -370,6 +370,8 @@ def canonicalize(perm, do_print=True):
 
                 if not is_con:
                     continue
+
+                one_valid = True
 
                 prnt(f"π({x=})=(y={int(y)}); {w=} val={int(val)}")
 
@@ -390,15 +392,18 @@ def canonicalize(perm, do_print=True):
                             passed.append(m)
                         else:
                             passed = [m]
+                            best_x = x
 
                         identity = True
-                        best_x = x
+                        
                     elif not identity:
                         prnt(f"    {y} -> {val} == {best}, adding")
                         passed.append(m)
                 else:
                     prnt(f"    {y} -> {val} > {best}, skip")
                     continue
+
+            assert(one_valid)
 
             if len(passed) == 0:
                 # no valid candidate passed checks; skip
@@ -410,17 +415,23 @@ def canonicalize(perm, do_print=True):
                 prnt("Warning: ambiguous! Choosing from")
                 for p in passed:
                     prnt(f"p={p}")
+                    
+                prnt(f"Need: {w} -> {best_x}")
 
                 # continue
                 m = passed[0]
                 for p in passed[1:]:
                     m.union(p)
-
+        
                 prnt("union=", m)
+                # m.enforce(y, best)
+                prnt(f"enforce {y} -> {best}")
+
                 ## These lines fix the hard-identity case but break the random
                 ## case
-                # cand.isect(m)
-                # cand.normalize()
+                cand.isect(m)
+                cand.normalize()
+                prnt(cand)
             else:
                 prnt(f"  Updating candidate map: π({best_x}) -> π'({w})")
                 cand = passed[0]
@@ -448,74 +459,74 @@ def canonicalize(perm, do_print=True):
     return cand.output()
 
 
-n = 5
-R = np.arange(n)
-N = 2**n
-bincomp = 1 << R
+# n = 5
+# R = np.arange(n)
+# N = 2**n
+# bincomp = 1 << R
 
-perm = np.arange(N)
-shuffle(perm)
+# perm = np.arange(N)
+# # shuffle(perm)
 
-s = list(strings_of_weight(2))
+# s = list(strings_of_weight(2))
 
 # perm[s[-1]], perm[s[-2]] = perm[s[-2]], perm[s[-1]]
-# perm[s[-3]], perm[s[-4]] = perm[s[-4]], perm[s[-3]]
+# # perm[s[-3]], perm[s[-4]] = perm[s[-4]], perm[s[-3]]
 
-print(perm)
+# print(perm)
 
-print("Perm:", perm)
+# print("Perm:", perm)
 
-q = canonicalize(perm)
-pp = apply_shuffle(perm, q)
-print(perm, q, pp)
-assert set(q) == set(range(n))
-assert set(pp) == set(range(N))
+# q = canonicalize(perm)
+# pp = apply_shuffle(perm, q)
+# print(perm, q, pp)
+# assert set(q) == set(range(n))
+# assert set(pp) == set(range(N))
 
-print(end_w)
+# print(end_w)
 
-test = True
+# test = True
 
-times = []
+# times = []
 
-if test:
-    good = 0
-    max_w = Counter()
-    for _ in range(10000):
-        print(_)
-        shuffle(perm)
-        start = time.time()
-        q = canonicalize(perm, do_print=False)
-        end = time.time()
-        times.append(end-start)
+# if test:
+#     good = 0
+#     max_w = Counter()
+#     for _ in range(1):
+#         print(_)
+#         # shuffle(perm)
+#         start = time.time()
+#         q = canonicalize(perm, do_print=False)
+#         end = time.time()
+#         times.append(end-start)
 
-        # print(q)
-        assert set(q) == set(range(n))
-        assert set(pp) == set(range(N))
+#         # print(q)
+#         assert set(q) == set(range(n))
+#         assert set(pp) == set(range(N))
 
-        print(f"{q=}")
+#         print(f"{q=}")
 
-        pp = apply_shuffle(perm, q)
-        max_w[end_w] += 1
-        for _ in range(4):
-            shuffle(q)
-            p2 = apply_shuffle(perm, q)
+#         pp = apply_shuffle(perm, q)
+#         max_w[end_w] += 1
+#         for _ in range(20):
+#             shuffle(q)
+#             p2 = apply_shuffle(perm, q)
 
-            if np.array_equal(perm, p2):
-                continue
+#             if np.array_equal(perm, p2):
+#                 continue
 
-            q2 = canonicalize(p2, False)
-            pp2 = apply_shuffle(p2, q2)
+#             q2 = canonicalize(p2, True)
+#             pp2 = apply_shuffle(p2, q2)
 
-            good += 1
+#             good += 1
 
-            # print("RESULT")
-            # print("expect", pp)
-            # print("got   ", pp2)
-            assert np.array_equal(pp, pp2)
-            # print("## CORRECT ##")
+#             # print("RESULT")
+#             print("expect", pp)
+#             print("got   ", pp2)
+#             assert np.array_equal(pp, pp2)
+#             # print("## CORRECT ##")
 
-        print(f"{max_w=}")
+#         print(f"{max_w=}")
 
-    print(f"{good=}")
+#     print(f"{good=}")
 
-    print(np.mean(times) * 1e6)
+#     print(np.mean(times) * 1e6)
